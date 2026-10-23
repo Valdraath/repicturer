@@ -13,7 +13,7 @@ installer needed: unzip and run. A CPU fallback is built in.
 
 ## Download
 
-Get `RePicturer-windows.zip` or `RePicturer-linux.zip` from the **Releases** page, unzip it anywhere and start
+Get `RePicturer-windows.zip` or `RePicturer-linux.zip` from the **[Releases](https://github.com/Valdraath/repicturer/releases)** page, unzip it anywhere and start
 `RePicturer.exe` (Windows) or `./RePicturer` (Linux). The release downloads contain the program, the converter and all models.
 
 ## Linux: first start
