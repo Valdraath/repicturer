@@ -129,7 +129,7 @@ Beyond the original waifu2x-caffe GUI, RePicturer brings its own improvements:
 
 The **?** button next to the model list in the program explains each model and lists which one to use for which kind of picture.
 
-![Model guide: which model for which picture](docs/screenshots/model-guide.png)
+![Model guide: which model for which picture](docs/screenshots/model-guide-table.png)
 
 | Model | Engine | Native scale | Use it for |
 |---|---|---|---|
