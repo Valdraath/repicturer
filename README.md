@@ -47,9 +47,44 @@ crop_size_list.txt            split size presets (same file as waifu2x-caffe)
 icon.png, install-desktop-entry.sh   (linux) application menu entry
 ```
 
+## User interface
+
+![RePicturer main window](docs/screenshots/main-window.png)
+
+The interface is based on the classic **waifu2x-caffe** GUI, so its users feel at home right away: the same layout of
+input / output, conversion mode, denoise level, scale and model. It has been rebuilt from scratch with Dear ImGui and
+refined with a modern **dark theme**, sharp scalable text in every language, and a window that can be resized and
+maximized (everything scales with it). Every option has a hover tip, and the **?** buttons open short guides.
+
+## What RePicturer adds
+
+Beyond the original waifu2x-caffe GUI, RePicturer brings its own improvements:
+
+* **Built-in file explorer:** a dark, fast file browser of its own, in a separate window (address bar, back / forward / up,
+  home folders and drives, search as you type, keyboard navigation). It remembers the last folder, only lists the image
+  types the program reads, and checks the input and output paths before you start, with a clear warning when a path is wrong.
+* **Model guide:** the **?** button next to the model list shows which model is best, also good or to avoid for each kind
+  of picture (anime, photos, JPEG-damaged pictures, photorealistic or noisy 3D renders, text, pixel art ...), and explains
+  every model.
+* **Controls that follow the model:** options a model cannot use are locked with a tooltip that says why. Models with
+  always-on cleanup run in Scale only; heavy 4x models lock Thread(s) to 1 so they never run out of GPU memory.
+* **Adjustable models:** denoise levels for Real-ESRGAN General and LSDIR Compact, and a **Detail level** (Faithful /
+  Balanced / Detailed / Maximum) for NMKD Siax, made by blending each model's official network versions.
+* **Any size, really processed:** any scale rate, width, height or width x height, also 1.00x: every mode that scales runs
+  the network and then resizes to the exact size. Real-ESRGAN x4plus has its native 2x network (x2plus) for faster 2x.
+* **Animated GIF and WebP** stay animated, with frame timing and loop count kept.
+* **Safe input:** every field only accepts valid values (scale, size, the quality range of each output format), with a
+  warning instead of a failed conversion. `setting.ini` is checked and repaired at startup, and Reset to Default keeps
+  your language.
+* **9 languages** with bundled Noto fonts, every label checked to fit.
+* **CPU fallback that works:** the CPU mode crash of the ncnn releases is fixed, and Real-ESRGAN gets a CPU path.
+* **Portable on Windows and Linux:** unzip and run, no installer, no Python, no CUDA; a Linux menu entry is one script away.
+
 ## Models
 
 The **?** button next to the model list in the program explains each model and lists which one to use for which kind of picture.
+
+![Model guide: which model for which picture](docs/screenshots/model-guide.png)
 
 | Model | Engine | Native scale | Use it for |
 |---|---|---|---|
