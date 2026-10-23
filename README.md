@@ -16,6 +16,51 @@ installer needed: unzip and run. A CPU fallback is built in.
 Get `RePicturer-windows.zip` or `RePicturer-linux.zip` from the **Releases** page, unzip it anywhere and start
 `RePicturer.exe` (Windows) or `./RePicturer` (Linux). The release downloads contain the program, the converter and all models.
 
+## Linux: first start
+
+1. **Unpack** the zip (use `unzip`, it keeps the executable permission):
+
+   ```
+   unzip RePicturer-linux.zip
+   cd RePicturer-linux
+   ```
+
+2. **Make the programs executable.** Three files need the `+x` permission: `RePicturer` (the app), `repicturer-cli`
+   (the converter it runs) and `install-desktop-entry.sh`. Some archive tools and downloads drop it, so run this once:
+
+   ```
+   chmod +x RePicturer repicturer-cli install-desktop-entry.sh
+   ```
+
+3. **Start it:**
+
+   ```
+   ./RePicturer
+   ```
+
+4. **Optional: add it to the application menu** (with its name and icon, no root needed). Run it again if you move the folder:
+
+   ```
+   ./install-desktop-entry.sh
+   ```
+
+**Requirements:** a 64-bit Linux with glibc 2.27 or newer (Ubuntu 18.04+, Debian 10+, Fedora, Arch, ...), an X11 or
+Wayland desktop (Wayland through XWayland), OpenGL 3.0 and a **Vulkan driver**:
+
+| Distribution | Install the Vulkan driver |
+|---|---|
+| Ubuntu / Debian / Mint | `sudo apt install libvulkan1 mesa-vulkan-drivers` (NVIDIA: the proprietary driver) |
+| Fedora | `sudo dnf install vulkan-loader mesa-vulkan-drivers` (NVIDIA: the proprietary driver) |
+| Arch / Manjaro | `sudo pacman -S vulkan-icd-loader` plus `vulkan-radeon`, `vulkan-intel` or `nvidia-utils` |
+
+**If something goes wrong:**
+
+* **"Permission denied"** when starting it: step 2 was skipped, run the `chmod` command.
+* **Nothing happens on double-click** in the file manager: start it from a terminal with `./RePicturer`, or use the menu
+  entry from step 4.
+* **Check GPU finds no GPU:** install or update the Vulkan driver above. Without one, RePicturer still works on the CPU,
+  only much slower.
+
 ## Support the project
 
 If you like the project, consider supporting me at: **[paypal.me/TheRunningRiot](https://paypal.me/TheRunningRiot)**
