@@ -1,0 +1,12 @@
+# build output
+/build/
+/build-linux/
+/dist/
+*.o
+*.obj
+
+# model files: shipped in the release downloads, see resources/models/README.md
+/resources/models/models-*/
+
+# local settings written next to the program
+setting.ini

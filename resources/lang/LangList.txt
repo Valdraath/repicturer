@@ -1,0 +1,10 @@
+﻿;LangName	LangID	SubLangID	FileName
+English	0x09	0x01	english.json
+繁體中文	0x04	0x01	Chinese_Traditional.json
+简体中文	0x04	0x02	Chinese_Simplified.json
+日本語	0x11	0x01	japanese.json
+한국어	0x12	0x01	korean.json
+Português	0x16	0x01	portuguese_brazilian.json
+Русский	0x19	0x01	russian.json
+Español	0x0A	0x01	spanish.json
+Tiếng Việt	0x2A	0x01	vietnamese.json
