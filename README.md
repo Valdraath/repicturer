@@ -16,6 +16,10 @@ installer needed: unzip and run. A CPU fallback is built in.
 Get `RePicturer-windows.zip` or `RePicturer-linux.zip` from the **Releases** page, unzip it anywhere and start
 `RePicturer.exe` (Windows) or `./RePicturer` (Linux). The release downloads contain the program, the converter and all models.
 
+## Support the project
+
+If you like the project, consider supporting me at: **[paypal.me/TheRunningRiot](https://paypal.me/TheRunningRiot)**
+
 ## Features
 
 * **16 models, 3 engines:** waifu2x, Real-CUGAN and Real-ESRGAN, plus the community photo models NMKD Siax / Superscale,
