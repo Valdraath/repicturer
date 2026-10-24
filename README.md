@@ -73,7 +73,7 @@ If you like the project, consider supporting me at: **[paypal.me/TheRunningRiot]
 * **Modes:** Denoise & Scale, Scale only, Denoise only, Scale & Auto Denoise (JPEG sources only), with denoise or detail levels.
 * **Formats:** PNG, JPG, TIF, BMP, TGA, WEBP and GIF in; 12 output formats, always written in 8 bit (the AI models work in 8 bit). Animated GIF / WebP stay animated.
 * **Batch:** files and folders (with drag & drop), multi-GPU, no-overwrite, and a command line.
-* **9 languages:** English, Chinese (Traditional / Simplified), Japanese, Korean, Portuguese (Brazil), Russian, Spanish, Vietnamese.
+* **10 languages:** English, Chinese (Traditional / Simplified), Japanese, Korean, Portuguese (Brazil), Russian, Spanish, Ukrainian, Vietnamese.
 
 The converter behind the GUI (`repicturer-cli`, based on waifu2x-ncnn-vulkan) is ncnn rebuilt from source with the waifu2x-caffe features added, so every engine supports:
 
@@ -86,7 +86,7 @@ The converter behind the GUI (`repicturer-cli`, based on waifu2x-ncnn-vulkan) is
 RePicturer(.exe)              the program (GUI)
 repicturer-cli(.exe)          converter used by the GUI (also usable from the command line)
 models-*/                     16 models, see below
-lang/                         9 languages
+lang/                         10 languages
 fonts/                        Noto Sans fonts for every UI language
 crop_size_list.txt            split size presets (same file as waifu2x-caffe)
 icon.png, install-desktop-entry.sh   (linux) application menu entry
@@ -121,7 +121,7 @@ Beyond the original waifu2x-caffe GUI, RePicturer brings its own improvements:
 * **Safe input:** every field only accepts valid values (scale, size, the quality range of each output format), with a
   warning instead of a failed conversion. `setting.ini` is checked and repaired at startup, and Reset to Default keeps
   your language.
-* **9 languages** with bundled Noto fonts, every label checked to fit.
+* **10 languages** with bundled Noto fonts, every label checked to fit.
 * **CPU fallback that works:** the CPU mode crash of the ncnn releases is fixed, and Real-ESRGAN gets a CPU path.
 * **Portable on Windows and Linux:** unzip and run, no installer, no Python, no CUDA; a Linux menu entry is one script away.
 
@@ -185,7 +185,7 @@ The outdated waifu2x-caffe vgg_7 models (RGB, Photo, Y, ukbench) are no longer s
 * **Processing:** TTA mode. Split size (0 = auto) and Thread(s) (replaces caffe's batch size), each with a hover tip and a **?** guide.
 * **Device:** a Device box (Auto / each GPU / CPU) and a **Check GPU** button.
 * **App Setting:** auto start, processor, boot with arguments, no overwrite, GPU, fixed folders. Also multi-GPU (`0,1`) with a split size and threads per GPU, load/save threads, the Real-CUGAN sync gap, and showing the converter log.
-* **Other:** 9 UI languages (English, Chinese Traditional / Simplified, Japanese, Korean, Portuguese (Brazil), Russian, Spanish, Vietnamese), progress bar, time left, log, and `setting.ini` next to the program.
+* **Other:** 10 UI languages (English, Chinese Traditional / Simplified, Japanese, Korean, Portuguese (Brazil), Russian, Spanish, Ukrainian, Vietnamese), progress bar, time left, log, and `setting.ini` next to the program.
 * **Window:** resizable and maximizable. The content scales up with the window (fonts, boxes, buttons) up to a 1360 px wide column, centred horizontally and pinned to the top. The log grows up to twice its height when there is room. The original size is the minimum.
 * **Pass report:** the log shows which networks really ran for the first image (every image with the verbose log), e.g. `noise2_scale2.0x_model (x2) -> scale2.0x_model (x2) -> resize 800x600 to 2560x1920`. This shows that Denoise & Scale really did both.
 * **Command line**, same as waifu2x-caffe-gui:
@@ -271,6 +271,6 @@ Every bundled model and library allows free use, sharing and changes, also comme
 * **Nomos8kSC, LSDIR Compact:** Helaman (Philip Hofmann), CC-BY-4.0 (converted to ncnn; LSDIR Compact levels 1-2 are weight blends)
 * **ESRGAN** (RRDB_PSNR_x4, used for the NMKD Siax detail levels): Xintao Wang, Apache-2.0
 * **Libraries:** ncnn (Tencent, BSD-3), glslang, libwebp (BSD-3), OpenJPEG (BSD-2), zlib-ng (zlib), Dear ImGui (MIT), GLFW (zlib), stb (MIT / public domain), Noto Sans fonts (SIL OFL 1.1), Roboto (Apache-2.0)
-* **Languages:** the translations start from the waifu2x-caffe language files (MIT) and were completed for RePicturer
+* **Languages:** the translations start from the waifu2x-caffe language files (MIT) and were completed for RePicturer; Ukrainian translation by Dymkom
 
 See `THIRD_PARTY_LICENSES.md`.
