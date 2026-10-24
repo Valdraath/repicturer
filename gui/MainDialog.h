@@ -160,7 +160,6 @@ private:
     std::string inputFileExt;
     bool use_tta;
     int output_quality; // -1 = none
-    int output_depth;
     int crop_size;
     int batch_size;     // ncnn: processing threads per gpu
     int gpu_no;         // -1 = auto
@@ -219,8 +218,6 @@ private:
     int radioNoise = 0;
     int radioScale = 0;
     int outExtIndex = 0;
-    int depthIndex = 0;
-    std::vector<int> depthItems;
     int comboModel = 0;
     bool checkTTA = false;
     int comboLang = 0;
@@ -326,7 +323,7 @@ private:
     void Waifu2xTime();
     void SaveIni(bool isSyncMember = true);
     void SetWindowTextLang();
-    void SetDepthAndQuality(bool SetDefaultQuality = true);
+    void SetQuality(bool SetDefaultQuality = true);
 
     void Exec();
     void WaitThreadExit();

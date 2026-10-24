@@ -463,5 +463,7 @@
 "JPG quality: 0-100. Higher = better quality and bigger file. Default 100.":"JPG 品質：0-100。數值越高，畫質越好、檔案越大。預設 100。",
 "WebP quality: 1-100 = lossy (higher = better quality, bigger file), 101 = lossless. Default 101.":"WebP 品質：1-100 = 有損（越高畫質越好、檔案越大），101 = 無損。預設 101。",
 "TGA: 0 = no compression, 1 = RLE compression (lossless, smaller file). Default 0.":"TGA：0 = 不壓縮，1 = RLE 壓縮（無損，檔案較小）。預設 0。",
-"%s has no quality setting.":"%s 沒有品質設定。"
+"%s has no quality setting.":"%s 沒有品質設定。",
+"8-bit":"8 位元",
+"RePicturer only supports 8-bit output.\nThe AI models work in 8-bit, so a higher bit depth would not add any real color detail.":"RePicturer 只支援 8 位元輸出。\nAI 模型以 8 位元運算，更高的位元深度不會增加真正的色彩細節。"
 }

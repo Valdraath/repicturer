@@ -463,5 +463,7 @@
 "JPG quality: 0-100. Higher = better quality and bigger file. Default 100.":"Chất lượng JPG: 0-100. Càng cao thì chất lượng càng tốt và file càng lớn. Mặc định 100.",
 "WebP quality: 1-100 = lossy (higher = better quality, bigger file), 101 = lossless. Default 101.":"Chất lượng WebP: 1-100 = nén có mất dữ liệu (càng cao chất lượng càng tốt, file càng lớn), 101 = không mất dữ liệu. Mặc định 101.",
 "TGA: 0 = no compression, 1 = RLE compression (lossless, smaller file). Default 0.":"TGA: 0 = không nén, 1 = nén RLE (không mất dữ liệu, file nhỏ hơn). Mặc định 0.",
-"%s has no quality setting.":"%s không có thiết lập chất lượng."
+"%s has no quality setting.":"%s không có thiết lập chất lượng.",
+"8-bit":"8-bit",
+"RePicturer only supports 8-bit output.\nThe AI models work in 8-bit, so a higher bit depth would not add any real color detail.":"RePicturer chỉ hỗ trợ xuất 8-bit.\nCác model AI xử lý ở 8-bit, nên độ sâu màu cao hơn cũng không thêm chi tiết màu thật sự."
 }

@@ -4,7 +4,7 @@
 //   - any scale ratio (-s 1.6), target width / height / width x height (-W / -H)
 //   - conversion modes noise / scale / noise_scale / auto_scale (denoise jpeg sources only)
 //   - denoise-only with models that only ship noise+scale networks (2x then shrink, like caffe)
-//   - output formats png bmp jpg jp2 sr tif hdr exr ppm webp tga, 8/16/32 bit depth, quality
+//   - output formats png bmp jpg jp2 sr tif hdr exr ppm webp tga gif (8 bit), quality
 //   - input extension filter, recursive folders keeping the tree, file lists, no-overwrite
 //   - --progress machine readable output and --list-gpu for front ends
 
@@ -93,7 +93,6 @@ static void print_usage()
         "  -f, --format fmt          output format png/jpg/webp/bmp/jp2/sr/tif/hdr/exr/ppm/tga/gif (default=ext/png)\n"
         "                            animated gif / webp inputs stay animated (saved as .gif / .webp)\n"
         "  -q, --output_quality q    jpg 0-100 (100), webp 1-100 or 101=lossless (101), tga 0/1 = rle off/on\n"
-        "  -d, --output_depth d      output bit depth 8/16/32 (depends on format, default=8)\n"
         "  -l, --input_extension_list list  extensions to read from a directory, e.g. png:jpg:jpeg:tif:tiff:bmp:tga\n"
         "  -r, --recursive           also convert sub directories, keeping the folder structure\n"
         "  -k, --no_overwrite        do not overwrite existing output files\n"
@@ -134,7 +133,6 @@ struct Options
     std::string format = "png";
     bool format_set = false;
     int quality = -1;
-    int depth = 8;
     std::vector<path_t> extlist;
     bool recursive = false;
     bool no_overwrite = false;
@@ -184,7 +182,7 @@ static int parse_args(const std::vector<path_t>& args, Options& o)
         {'n', "noise_level", true}, {'s', "scale_ratio", true}, {'W', "scale_width", true}, {'H', "scale_height", true},
         {'M', "mode", true}, {'t', "tile_size", true}, {'m', "model_dir", true}, {'g', "gpu", true},
         {'j', "jobs", true}, {'x', "tta", false}, {'f', "format", true}, {'q', "output_quality", true},
-        {'d', "output_depth", true}, {'l', "input_extension_list", true}, {'r', "recursive", false},
+        {'l', "input_extension_list", true}, {'r', "recursive", false},
         {'k', "no_overwrite", false}, {'L', "file_list", true}, {0, "list-gpu", false}, {0, "progress", false},
         {0, "output_extention", true}, {0, "input_extention_list", true}, {'c', "syncgap", true},
     };
@@ -260,7 +258,6 @@ static int parse_args(const std::vector<path_t>& args, Options& o)
         else if (l == "tta") o.tta = true;
         else if (l == "format" || l == "output_extention") { o.format = val; o.format_set = true; }
         else if (l == "output_quality") { if (!parse_int(val, o.quality)) { fprintf(stderr, "invalid output_quality argument\n"); return -1; } }
-        else if (l == "output_depth") { if (!parse_int(val, o.depth)) { fprintf(stderr, "invalid output_depth argument\n"); return -1; } }
         else if (l == "input_extension_list" || l == "input_extention_list")
         {
             o.extlist.clear();
@@ -907,7 +904,7 @@ static void proc_worker(GpuNets* g)
                 Image8 cur = std::move(a.frames[k]);
                 if (!run_plan(cur)) { ok = false; break; }
                 OutImage o;
-                image_resize_to(cur, plan.outw, plan.outh, 8, o);
+                image_resize_to(cur, plan.outw, plan.outh, o);
                 image_alpha_clean(o);
                 if (!enc->add(o, a.durations_ms[k], err)) { ok = false; break; }
                 if (g_opt.progress)
@@ -932,7 +929,7 @@ static void proc_worker(GpuNets* g)
             continue;
         }
 
-        image_resize_to(cur, plan.outw, plan.outh, g_opt.depth, t.out);
+        image_resize_to(cur, plan.outw, plan.outh, t.out);
         image_alpha_clean(t.out);
         g_tosave->put(std::move(t));
     }
@@ -961,16 +958,10 @@ static void save_worker()
         {
             // container without alpha channel: drop it
             const size_t npx = (size_t)img.w * img.h;
-            const int bpc = img.depth / 8;
-            std::vector<unsigned char> d(npx * 3 * bpc);
-            for (size_t i = 0; i < npx; i++) memcpy(&d[i * 3 * bpc], &img.data[i * 4 * bpc], 3 * bpc);
+            std::vector<unsigned char> d(npx * 3);
+            for (size_t i = 0; i < npx; i++) memcpy(&d[i * 3], &img.data[i * 4], 3);
             img.data.swap(d);
             img.c = 3;
-        }
-        if (!preEncoded && fi && !format_supports_depth(fi, img.depth))
-        {
-            report_fail("encode", t.inpath, t.outpath, "bit depth not supported by this format");
-            continue;
         }
 
         std::vector<unsigned char> encoded;
@@ -1099,11 +1090,6 @@ static int run(const std::vector<path_t>& args)
     }
     o.format = find_output_format(o.format.c_str())->ext;
 
-    if (o.depth != 8 && o.depth != 16 && o.depth != 32)
-    {
-        fprintf(stderr, "invalid output_depth argument\n");
-        return -1;
-    }
 
     // collect input and output file paths
     std::vector<path_t> input_files, output_files;
@@ -1169,7 +1155,7 @@ static int run(const std::vector<path_t>& args)
         output_files.push_back(outpath);
     }
 
-    // validate format / depth for every output
+    // validate the format (and quality) of every output
     for (size_t i = 0; i < output_files.size(); i++)
     {
         const path_t ext = get_file_extension(output_files[i]);
@@ -1177,11 +1163,6 @@ static int run(const std::vector<path_t>& args)
         if (!fi)
         {
             fprintf(stderr, "invalid output extension %s\n", P(output_files[i]).c_str());
-            return -1;
-        }
-        if (!format_supports_depth(fi, o.depth))
-        {
-            fprintf(stderr, "output depth %d is not supported by .%s\n", o.depth, fi->ext);
             return -1;
         }
         if (fi->has_quality && o.quality >= 0 && (o.quality < fi->quality_min || o.quality > fi->quality_max))

@@ -456,7 +456,7 @@ public:
 
     bool add(const OutImage& frame, int duration_ms, std::string& err) override
     {
-        if (frame.depth != 8 || (frame.c != 3 && frame.c != 4) || frame.w != W || frame.h != H)
+        if ((frame.c != 3 && frame.c != 4) || frame.w != W || frame.h != H)
         {
             err = "gif frame format mismatch";
             return false;
@@ -617,20 +617,7 @@ std::unique_ptr<AnimEncoder> anim_create_encoder(const std::string& ext, int w, 
 
 bool gif_encode_still(const OutImage& img, std::vector<unsigned char>& out, std::string& err)
 {
-    OutImage im8 = img;
-    if (img.depth != 8)
-    {
-        // gif is 8 bit only
-        const size_t n = (size_t)img.w * img.h * img.c;
-        im8.depth = 8;
-        im8.data.resize(n);
-        for (size_t i = 0; i < n; i++)
-        {
-            float f = img.depth == 16 ? ((const uint16_t*)img.data.data())[i] / 65535.f : ((const float*)img.data.data())[i];
-            im8.data[i] = (unsigned char)lrintf(std::min(std::max(f, 0.f), 1.f) * 255.f);
-        }
-    }
     std::unique_ptr<AnimEncoder> e = anim_create_encoder("gif", img.w, img.h, -1, -1, err);
     if (!e) return false;
-    return e->add(im8, 0, err) && e->finish(out, err);
+    return e->add(img, 0, err) && e->finish(out, err);
 }

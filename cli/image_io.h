@@ -15,13 +15,12 @@ struct Image8
     std::vector<unsigned char> data;
 };
 
-// output pixel buffer, depth 8 (uint8), 16 (uint16 native endian) or 32 (float 0..1)
+// output pixel buffer: 8 bit RGB / RGBA (the networks work in 8 bit, every output format is written in 8 bit)
 struct OutImage
 {
     int w = 0;
     int h = 0;
     int c = 0;
-    int depth = 8;
     std::vector<unsigned char> data;
 };
 
@@ -38,9 +37,9 @@ bool image_decode(const unsigned char* data, size_t size, Image8& out, DecodeInf
 // read only the dimensions (used by the gui for the split size list)
 bool image_probe_size(const unsigned char* data, size_t size, int& w, int& h);
 
-// resize (or just convert when the size matches) to the requested output depth
+// resize (or just copy when the size matches) to the output size
 // filter follows caffe: cubic, area-like prefilter when shrinking a lot
-void image_resize_to(const Image8& in, int ow, int oh, int depth, OutImage& out);
+void image_resize_to(const Image8& in, int ow, int oh, OutImage& out);
 
 // remove colour from fully transparent pixels (caffe AlphaCleanImage)
 void image_alpha_clean(OutImage& img);

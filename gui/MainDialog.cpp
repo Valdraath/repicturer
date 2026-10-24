@@ -90,7 +90,7 @@ static std::string ExtListDisplay()
 }
 // explorer settings an earlier version wrote: accepted by the setting.ini check, removed on the next save
 static const char* const LegacyBrowserKeys[] = {"LastBrowserBookmarks", "LastBrowserPinned", "LastBrowserView",
-    "LastBrowserFoldersFirst", "LastBrowserPreview", "LastBrowserAutoOpen", "LastBrowserColumns", "LastInputFileExt", "LastBrowserHidden"};
+    "LastBrowserFoldersFirst", "LastBrowserPreview", "LastBrowserAutoOpen", "LastBrowserColumns", "LastInputFileExt", "LastBrowserHidden", "LastOutputDepth"};
 
 // ---- value rules of setting.ini (CheckSettingFile, SaveIni)
 
@@ -210,7 +210,7 @@ namespace
 // ============================================================================ construction
 
 DialogEvent::DialogEvent() : mode(eModeNoiseScale), modeStr("noise_scale"), noise_level(0), scale_ratio(1.0), scale_width(0), scale_height(0),
-    process("gpu"), outputExt(".png"), inputFileExt(DefaultInputExtList), use_tta(false), output_quality(-1), output_depth(8),
+    process("gpu"), outputExt(".png"), inputFileExt(DefaultInputExtList), use_tta(false), output_quality(-1),
     crop_size(0), batch_size(2), gpu_no(-1), isLastError(false), scaleType(eScaleTypeEnd), modelType(0), tAutoMode("none"),
     isArgStartAuto(true), isArgStartSuccessFinish(true), isOutputNoOverwrite(false), isNotSaveParam(false), isSetInitCrop(false),
     isCommandLineStart(false), loadThreads(1), saveThreads(2), verboseLog(false), syncgap(3), gpuState(0), cancelFlag(false)
@@ -441,8 +441,6 @@ std::string DialogEvent::AddName() const
             addstr += "(" + std::to_string(scale_width) + "x" + std::to_string(scale_height) + ")";
     }
 
-    if (output_depth != 8)
-        addstr += "(" + std::to_string(output_depth) + "bit)";
 
     return addstr;
 }
@@ -554,13 +552,6 @@ bool DialogEvent::SyncMember(const bool NotSyncCropSize, const bool silent)
         }
         else
             output_quality = -1;
-
-        if (depthIndex < 0 || depthIndex >= (int)depthItems.size())
-        {
-            if (!silent) MessageBox(L("MessageOutputQualityCheckError"), errTitle, IconError);
-        }
-        else
-            output_depth = depthItems[depthIndex];
     }
 
     inputFileExt = DefaultInputExtList;
@@ -718,8 +709,6 @@ void DialogEvent::SaveIni(const bool isSyncMember)
     std::string tQuality;
     if (fmt && fmt->has_quality)
         tQuality = std::to_string(output_quality >= fmt->quality_min && output_quality <= fmt->quality_max ? output_quality : fmt->quality_default);
-    int tDepth = output_depth;
-    if (fmt && !format_supports_depth(fmt, tDepth)) tDepth = fmt->depths[0];
     const std::string tCropText = Trim(comboCrop);
     long tCropNum;
     const std::string tCrop = ParseInt(tCropText, tCropNum) && (tCropNum == 0 || (tCropNum >= 32 && tCropNum <= 65536)) ? tCropText : "0";
@@ -737,7 +726,6 @@ void DialogEvent::SaveIni(const bool isSyncMember)
     ini.Set(S, "LastUseTTA", use_tta ? "1" : "0");
     ini.Set(S, "LastDeviceNo", std::to_string(gpu_no >= -1 && gpu_no <= 63 ? gpu_no : -1));
     ini.Set(S, "LastOutputQuality", tQuality);
-    ini.Set(S, "LastOutputDepth", std::to_string(tDepth));
     ini.Set(S, "LastLanguage", LangName);
     ini.Set(S, "LastAutoMode", tAutoMode);
     ini.Set(S, "LastIsArgStartAuto", isArgStartAuto ? "1" : "0");
@@ -772,25 +760,13 @@ void DialogEvent::SaveIni(const bool isSyncMember)
 void DialogEvent::SetWindowTextLang()
 {
     // labels are looked up every frame; only the dependent texts need a refresh
-    SetDepthAndQuality(false);
+    SetQuality(false);
 }
 
-void DialogEvent::SetDepthAndQuality(const bool SetDefaultQuality)
+void DialogEvent::SetQuality(const bool SetDefaultQuality)
 {
     if (outExtIndex < 0 || outExtIndex >= g_output_format_count) return;
     const OutputFormatInfo& elm = g_output_formats[outExtIndex];
-
-    int oldDepth = 0;
-    if (depthIndex >= 0 && depthIndex < (int)depthItems.size()) oldDepth = depthItems[depthIndex];
-
-    depthItems.clear();
-    int defaultIndex = 0;
-    for (int i = 0; i < elm.ndepth; i++)
-    {
-        depthItems.push_back(elm.depths[i]);
-        if (elm.depths[i] == oldDepth) defaultIndex = i;
-    }
-    depthIndex = defaultIndex;
 
     if (!elm.has_quality)
     {
@@ -1302,7 +1278,6 @@ void DialogEvent::Exec()
     a.push_back("-t"); a.push_back(tileArg);
     a.push_back("-j"); a.push_back(std::to_string(loadThreads) + ":" + procArg + ":" + std::to_string(saveThreads));
     if (use_tta) a.push_back("-x");
-    a.push_back("-d"); a.push_back(std::to_string(output_depth));
     if (output_quality >= 0) { a.push_back("-q"); a.push_back(std::to_string(output_quality)); }
     if (isOutputNoOverwrite) a.push_back("-k");
     if (verboseLog) a.push_back("-v");
@@ -1687,7 +1662,7 @@ void DialogEvent::LangChange()
 
 void DialogEvent::OutExtChange()
 {
-    SetDepthAndQuality();
+    SetQuality();
     ReplaceAddString();
 }
 
@@ -1774,7 +1749,6 @@ bool DialogEvent::CheckSettingFile(bool& missing) const
         {"LastUseTTA", bool01},
         {"LastDeviceNo", [](const std::string& v) { return IsIntIn(v, -1, 63); }},
         {"LastOutputQuality", [](const std::string&) { return true; }}, // checked with the format below
-        {"LastOutputDepth", [](const std::string&) { return true; }},   // checked with the format below
         {"LastLanguage", [this](const std::string& v) {
             for (const auto& l : lang.GetLangList()) if (l.LangName == v) return true;
             return false;
@@ -1823,19 +1797,13 @@ bool DialogEvent::CheckSettingFile(bool& missing) const
         kv[key] = value;
     }
 
-    // ---- values that depend on each other: quality and depth must fit the output format
+    // ---- values that depend on each other: the quality must fit the output format
     const auto ext = kv.find("LastOutputExt");
     const OutputFormatInfo* fmt = ext != kv.end() ? find_output_format(ext->second.c_str()) : find_output_format("png");
     const auto q = kv.find("LastOutputQuality");
     if (q != kv.end())
     {
         if (fmt->has_quality ? !IsIntIn(q->second, fmt->quality_min, fmt->quality_max) : !q->second.empty()) return false;
-    }
-    const auto d = kv.find("LastOutputDepth");
-    if (d != kv.end())
-    {
-        long n;
-        if (!IsIntIn(d->second, 1, 64) || !ParseInt(d->second, n) || !format_supports_depth(fmt, (int)n)) return false;
     }
 
     missing = missing || kv.size() != rules.size();
@@ -1922,7 +1890,6 @@ void DialogEvent::Create(int argc, char** argv)
         const int num = ini.GetInt(S, "LastOutputQuality", -100);
         if (num != -100) output_quality = num;
     }
-    output_depth = ini.GetInt(S, "LastOutputDepth", output_depth);
     tAutoMode = ini.Get(S, "LastAutoMode", "none");
     isArgStartAuto = ini.GetInt(S, "LastIsArgStartAuto", 1) != 0;
     isArgStartSuccessFinish = ini.GetInt(S, "LastIsArgStartSuccessFinish", 1) != 0;
@@ -2006,12 +1973,7 @@ void DialogEvent::Create(int argc, char** argv)
     if (output_quality >= 0)
         CopyStr(editQuality, sizeof(editQuality), std::to_string(output_quality));
 
-    depthItems.clear();
-    depthItems.push_back(output_depth);
-    depthIndex = 0;
-    SetDepthAndQuality(output_quality < 0);
-    for (size_t i = 0; i < depthItems.size(); i++)
-        if (depthItems[i] == output_depth) depthIndex = (int)i;
+    SetQuality(output_quality < 0);
 
     FixModeForModel();
 
@@ -2079,7 +2041,7 @@ void DialogEvent::ParseCommandLine(int argc, char** argv)
         const OutputFormatInfo* f = find_output_format(e.c_str());
         if (f)
             for (int i = 0; i < g_output_format_count; i++)
-                if (&g_output_formats[i] == f) { outExtIndex = i; SetDepthAndQuality(); }
+                if (&g_output_formats[i] == f) { outExtIndex = i; SetQuality(); }
         isSetParam = true;
     }
     if (has("mode"))
@@ -2122,13 +2084,7 @@ void DialogEvent::ParseCommandLine(int argc, char** argv)
     }
     if (has("process")) { process = v["process"] == "cpu" ? "cpu" : "gpu"; isSetParam = true; }
     if (has("output_quality")) { CopyStr(editQuality, sizeof(editQuality), v["output_quality"]); isSetParam = true; }
-    if (has("output_depth"))
-    {
-        long d;
-        if (ParseInt(v["output_depth"], d))
-            for (size_t i = 0; i < depthItems.size(); i++) if (depthItems[i] == d) depthIndex = (int)i;
-        isSetParam = true;
-    }
+    // output_depth (-d): accepted for waifu2x-caffe command lines, the output is always 8 bit
     if (has("crop_size")) { CopyStr(comboCrop, sizeof(comboCrop), v["crop_size"]); isSetParam = true; isSetInitCrop = true; }
     if (has("batch_size")) { CopyStr(comboBatch, sizeof(comboBatch), v["batch_size"]); isSetParam = true; }
     if (has("gpu"))
@@ -2772,9 +2728,11 @@ void DialogEvent::DrawMain(float s)
 
     GroupBox(L("IDC_STATIC_OUTPUT_DEPTH"), 395, 57, 76, 29);
     {
-        std::vector<std::string> items;
-        for (int d : depthItems) items.push_back(std::to_string(d));
-        if (Combo("##depth", &depthIndex, items, 399, 68, 68, depthItems.size() > 1)) ReplaceAddString();
+        // fixed at 8 bit: plain text like the input file extensions, the reason in the tooltip
+        RowLabel(T("8-bit"), 401, 68, 467);
+        if (HoverRect(395, 57, 76, 29))
+            ImGui::SetTooltip("%s", T("RePicturer only supports 8-bit output.\n"
+                "The AI models work in 8-bit, so a higher bit depth would not add any real color detail.").c_str());
     }
 
     // ---- two rows right of "Output depth bits", two columns (labels 476-571, controls 575-654), each centred:
@@ -3403,7 +3361,6 @@ namespace
         "'Scale only' never denoises (Real-ESRGAN General: weakest; LSDIR Compact: no cleanup).",
         "TTA mode averages 8 rotated / mirrored runs: slightly better edges, 8x slower.",
         "Transparency (alpha) is enlarged with bicubic interpolation by all engines; colour is processed by the network.",
-        "16 / 32-bit output: the networks work in 8 bit; higher depth only keeps the final resize smoother.",
         "AI upscalers can invent detail (textures, letters). Check the result before using it for text, documents or anything where accuracy matters.",
     };
 }
@@ -3813,11 +3770,7 @@ void DialogEvent::ResetToDefault()
     CopyStr(editExtList, sizeof(editExtList), ExtListDisplay());
     outExtIndex = 0; // .png
     outputExt = ".png";
-    depthItems.clear();
-    depthIndex = 0;
-    SetDepthAndQuality(true);
-    depthIndex = 0;
-    output_depth = 8;
+    SetQuality(true);
 
     // conversion
     radioMode = 0;  // Denoise & Scale

@@ -1,7 +1,7 @@
 // image decode / resize / encode for repicturer-cli (enhanced waifu2x-ncnn-vulkan)
 //
 // decoders : stb_image (png jpg bmp tga gif psd hdr pic pnm), libwebp, openjpeg (jp2 j2k), own tiff reader
-// encoders : own png (8/16 bit), own tiff (8/16/32 bit, deflate), own exr (half/float, zip), own sun raster,
+// encoders : own png, own tiff (deflate), own exr (half, zip), own sun raster, all written from 8 bit data,
 //            own ppm (8/16 bit), stb_image_write (bmp jpg tga hdr), libwebp, openjpeg (lossless jp2)
 
 #include "image_io.h"
@@ -518,7 +518,7 @@ static bool jp2_decode(const unsigned char* data, size_t size, bool j2k, Image8&
 static bool jp2_encode(const OutImage& img, std::vector<unsigned char>& outbuf, std::string& err)
 {
     const int nc = img.c;
-    const int prec = img.depth == 16 ? 16 : 8;
+    const int prec = 8;
     std::vector<opj_image_cmptparm_t> cp(nc);
     for (int c = 0; c < nc; c++)
     {
@@ -539,16 +539,8 @@ static bool jp2_encode(const OutImage& img, std::vector<unsigned char>& outbuf, 
     for (int c = 0; c < nc; c++)
     {
         OPJ_INT32* d = oimg->comps[c].data;
-        if (prec == 16)
-        {
-            const uint16_t* s = (const uint16_t*)img.data.data();
-            for (size_t i = 0; i < npx; i++) d[i] = s[i * nc + c];
-        }
-        else
-        {
-            const unsigned char* s = img.data.data();
-            for (size_t i = 0; i < npx; i++) d[i] = s[i * nc + c];
-        }
+        const unsigned char* s = img.data.data();
+        for (size_t i = 0; i < npx; i++) d[i] = s[i * nc + c];
     }
 
     opj_cparameters_t params;
@@ -653,94 +645,31 @@ bool image_probe_size(const unsigned char* data, size_t size, int& w, int& h)
 
 // ============================================================================ resize / convert
 
-void image_resize_to(const Image8& in, int ow, int oh, int depth, OutImage& out)
+void image_resize_to(const Image8& in, int ow, int oh, OutImage& out)
 {
     out.w = ow;
     out.h = oh;
     out.c = in.c;
-    out.depth = depth;
     const size_t n = (size_t)ow * oh * in.c;
-    const stbir_pixel_layout layout = in.c == 4 ? STBIR_RGBA : STBIR_RGB;
-    const bool same = ow == in.w && oh == in.h;
-
-    if (depth == 8)
-    {
-        out.data.resize(n);
-        if (same)
-            memcpy(out.data.data(), in.data.data(), n);
-        else
-            stbir_resize(in.data.data(), in.w, in.h, 0, out.data.data(), ow, oh, 0, layout, STBIR_TYPE_UINT8, STBIR_EDGE_CLAMP, STBIR_FILTER_CATMULLROM);
-        return;
-    }
-
-    // > 8 bit output: interpolate in float so the in-between values are kept
-    std::vector<float> f(n);
-    if (same)
-    {
-        for (size_t i = 0; i < n; i++) f[i] = in.data[i] * (1.f / 255.f);
-    }
+    out.data.resize(n);
+    if (ow == in.w && oh == in.h)
+        memcpy(out.data.data(), in.data.data(), n);
     else
-    {
-        std::vector<float> src((size_t)in.w * in.h * in.c);
-        for (size_t i = 0; i < src.size(); i++) src[i] = in.data[i] * (1.f / 255.f);
-        stbir_resize(src.data(), in.w, in.h, 0, f.data(), ow, oh, 0, layout, STBIR_TYPE_FLOAT, STBIR_EDGE_CLAMP, STBIR_FILTER_CATMULLROM);
-        for (size_t i = 0; i < n; i++) f[i] = std::min(std::max(f[i], 0.f), 1.f);
-    }
-
-    if (depth == 16)
-    {
-        out.data.resize(n * 2);
-        uint16_t* d = (uint16_t*)out.data.data();
-        for (size_t i = 0; i < n; i++) d[i] = (uint16_t)lrintf(f[i] * 65535.f);
-    }
-    else
-    {
-        out.data.resize(n * 4);
-        memcpy(out.data.data(), f.data(), n * 4);
-    }
+        stbir_resize(in.data.data(), in.w, in.h, 0, out.data.data(), ow, oh, 0, in.c == 4 ? STBIR_RGBA : STBIR_RGB,
+                     STBIR_TYPE_UINT8, STBIR_EDGE_CLAMP, STBIR_FILTER_CATMULLROM);
 }
 
 void image_alpha_clean(OutImage& img)
 {
     if (img.c != 4) return;
     const size_t npx = (size_t)img.w * img.h;
-    if (img.depth == 8)
-    {
-        unsigned char* p = img.data.data();
-        for (size_t i = 0; i < npx; i++, p += 4) if (p[3] == 0) p[0] = p[1] = p[2] = 0;
-    }
-    else if (img.depth == 16)
-    {
-        uint16_t* p = (uint16_t*)img.data.data();
-        for (size_t i = 0; i < npx; i++, p += 4) if (p[3] == 0) p[0] = p[1] = p[2] = 0;
-    }
-    else
-    {
-        float* p = (float*)img.data.data();
-        for (size_t i = 0; i < npx; i++, p += 4) if (p[3] <= 0.f) p[0] = p[1] = p[2] = 0.f;
-    }
+    unsigned char* p = img.data.data();
+    for (size_t i = 0; i < npx; i++, p += 4) if (p[3] == 0) p[0] = p[1] = p[2] = 0;
 }
 
-// sample as float 0..1 / 8 bit / 16 bit regardless of the stored depth
-static inline float px_f(const OutImage& img, size_t i)
-{
-    if (img.depth == 8) return img.data[i] * (1.f / 255.f);
-    if (img.depth == 16) return ((const uint16_t*)img.data.data())[i] * (1.f / 65535.f);
-    return ((const float*)img.data.data())[i];
-}
-
-static inline unsigned char px_8(const OutImage& img, size_t i)
-{
-    if (img.depth == 8) return img.data[i];
-    return (unsigned char)lrintf(std::min(std::max(px_f(img, i), 0.f), 1.f) * 255.f);
-}
-
-static inline uint16_t px_16(const OutImage& img, size_t i)
-{
-    if (img.depth == 16) return ((const uint16_t*)img.data.data())[i];
-    if (img.depth == 8) return (uint16_t)(img.data[i] * 257);
-    return (uint16_t)lrintf(std::min(std::max(px_f(img, i), 0.f), 1.f) * 65535.f);
-}
+// sample as float 0..1 (hdr / exr) or as stored
+static inline float px_f(const OutImage& img, size_t i) { return img.data[i] * (1.f / 255.f); }
+static inline unsigned char px_8(const OutImage& img, size_t i) { return img.data[i]; }
 
 static std::vector<unsigned char> to_8bit(const OutImage& img, int outc)
 {
@@ -809,17 +738,12 @@ static void png_chunk(std::vector<unsigned char>& out, const char* type, const u
 
 static bool png_encode(const OutImage& img, std::vector<unsigned char>& out, std::string& err)
 {
-    const int bitdepth = img.depth == 16 ? 16 : 8;
-    const int bpp = img.c * bitdepth / 8;
+    const int bpp = img.c;
     const size_t rowbytes = (size_t)img.w * bpp;
     const size_t npx = (size_t)img.w * img.h;
 
     std::vector<unsigned char> raw(rowbytes * img.h);
-    for (size_t i = 0; i < npx * img.c; i++)
-    {
-        if (bitdepth == 8) raw[i] = px_8(img, i);
-        else { uint16_t v = px_16(img, i); raw[i * 2] = (unsigned char)(v >> 8); raw[i * 2 + 1] = (unsigned char)v; }
-    }
+    memcpy(raw.data(), img.data.data(), npx * img.c);
 
     // adaptive filtering, minimum sum of absolute differences heuristic
     std::vector<unsigned char> filtered((rowbytes + 1) * img.h);
@@ -867,7 +791,7 @@ static bool png_encode(const OutImage& img, std::vector<unsigned char>& out, std
     unsigned char ihdr[13];
     ihdr[0] = (unsigned char)(img.w >> 24); ihdr[1] = (unsigned char)(img.w >> 16); ihdr[2] = (unsigned char)(img.w >> 8); ihdr[3] = (unsigned char)img.w;
     ihdr[4] = (unsigned char)(img.h >> 24); ihdr[5] = (unsigned char)(img.h >> 16); ihdr[6] = (unsigned char)(img.h >> 8); ihdr[7] = (unsigned char)img.h;
-    ihdr[8] = (unsigned char)bitdepth;
+    ihdr[8] = 8;
     ihdr[9] = img.c == 4 ? 6 : 2;
     ihdr[10] = ihdr[11] = ihdr[12] = 0;
     png_chunk(out, "IHDR", ihdr, 13);
@@ -880,9 +804,8 @@ static bool png_encode(const OutImage& img, std::vector<unsigned char>& out, std
 
 static bool tiff_encode(const OutImage& img, std::vector<unsigned char>& out, std::string& err)
 {
-    const int bits = img.depth;
-    const int bytes = bits / 8;
-    const size_t rowbytes = (size_t)img.w * img.c * bytes;
+    const int bits = 8;
+    const size_t rowbytes = (size_t)img.w * img.c;
     uint32_t rps = (uint32_t)std::max<size_t>(1, (1u << 20) / std::max<size_t>(rowbytes, 1));
     if (rps > (uint32_t)img.h) rps = (uint32_t)img.h;
     const uint32_t nstrips = ((uint32_t)img.h + rps - 1) / rps;
@@ -898,9 +821,7 @@ static bool tiff_encode(const OutImage& img, std::vector<unsigned char>& out, st
         strip.resize((size_t)(y1 - y0) * rowbytes);
         size_t base = (size_t)y0 * img.w * img.c;
         size_t cnt = (size_t)(y1 - y0) * img.w * img.c;
-        if (bits == 8) for (size_t i = 0; i < cnt; i++) strip[i] = px_8(img, base + i);
-        else if (bits == 16) for (size_t i = 0; i < cnt; i++) { uint16_t v = px_16(img, base + i); strip[i * 2] = (unsigned char)v; strip[i * 2 + 1] = (unsigned char)(v >> 8); }
-        else for (size_t i = 0; i < cnt; i++) { float v = px_f(img, base + i); memcpy(&strip[i * 4], &v, 4); }
+        memcpy(strip.data(), img.data.data() + base, cnt);
         if (!zlib_compress_vec(strip.data(), strip.size(), z, 6)) { err = "tiff deflate failed"; return false; }
         offs[s] = (uint32_t)out.size();
         cnts[s] = (uint32_t)z.size();
@@ -939,20 +860,20 @@ static bool tiff_encode(const OutImage& img, std::vector<unsigned char>& out, st
     e.push_back({284, 3, 1, 1});
     e.push_back({296, 3, 1, 2});
     if (img.c == 4) e.push_back({338, 3, 1, 2});
-    e.push_back({339, 3, 1, bits == 32 ? 3u : 1u});
+    e.push_back({339, 3, 1, 1u});
     if (img.c == 4)
     {
         // value for SampleFormat must have count = samples per pixel
         e.back().count = 4;
         uint32_t sf_off = (uint32_t)out.size();
-        for (int c = 0; c < 4; c++) put_le16(out, bits == 32 ? 3 : 1);
+        for (int c = 0; c < 4; c++) put_le16(out, 1);
         e.back().value = sf_off;
     }
     else if (img.c == 3)
     {
         e.back().count = 3;
         uint32_t sf_off = (uint32_t)out.size();
-        for (int c = 0; c < 3; c++) put_le16(out, bits == 32 ? 3 : 1);
+        for (int c = 0; c < 3; c++) put_le16(out, 1);
         put_le16(out, 0);
         e.back().value = sf_off;
     }
@@ -997,8 +918,7 @@ static inline uint16_t float_to_half(float f)
 
 static bool exr_encode(const OutImage& img, std::vector<unsigned char>& out, std::string& err)
 {
-    const bool half = img.depth != 32;
-    const int vbytes = half ? 2 : 4;
+    const int vbytes = 2; // half float
     const int nc = img.c;
     // channels must be listed alphabetically
     const char* names4[4] = {"A", "B", "G", "R"};
@@ -1021,7 +941,7 @@ static bool exr_encode(const OutImage& img, std::vector<unsigned char>& out, std
     for (int c = 0; c < nc; c++)
     {
         v.insert(v.end(), names[c], names[c] + strlen(names[c]) + 1);
-        put_le32(v, half ? 1 : 2);
+        put_le32(v, 1); // HALF
         v.push_back(0); v.push_back(0); v.push_back(0); v.push_back(0);
         put_le32(v, 1);
         put_le32(v, 1);
@@ -1060,8 +980,9 @@ static bool exr_encode(const OutImage& img, std::vector<unsigned char>& out, std
                 for (int x = 0; x < img.w; x++)
                 {
                     float f = px_f(img, ((size_t)y * img.w + x) * nc + src[c]);
-                    if (half) { uint16_t hv = float_to_half(f); raw[p++] = (unsigned char)hv; raw[p++] = (unsigned char)(hv >> 8); }
-                    else { memcpy(&raw[p], &f, 4); p += 4; }
+                    const uint16_t hv = float_to_half(f);
+                    raw[p++] = (unsigned char)hv;
+                    raw[p++] = (unsigned char)(hv >> 8);
                 }
 
         // zip predictor: interleave then delta
@@ -1128,18 +1049,13 @@ static bool sunraster_encode(const OutImage& img, std::vector<unsigned char>& ou
 
 static bool ppm_encode(const OutImage& img, std::vector<unsigned char>& out)
 {
-    const bool b16 = img.depth == 16;
     char hdr[64];
-    int n = snprintf(hdr, sizeof(hdr), "P6\n%d %d\n%d\n", img.w, img.h, b16 ? 65535 : 255);
+    int n = snprintf(hdr, sizeof(hdr), "P6\n%d %d\n255\n", img.w, img.h);
     out.assign(hdr, hdr + n);
     const size_t npx = (size_t)img.w * img.h;
-    out.reserve(out.size() + npx * 3 * (b16 ? 2 : 1));
+    out.reserve(out.size() + npx * 3);
     for (size_t i = 0; i < npx; i++)
-        for (int c = 0; c < 3; c++)
-        {
-            if (b16) { uint16_t v = px_16(img, i * img.c + c); out.push_back((unsigned char)(v >> 8)); out.push_back((unsigned char)v); }
-            else out.push_back(px_8(img, i * img.c + c));
-        }
+        for (int c = 0; c < 3; c++) out.push_back(px_8(img, i * img.c + c));
     return true;
 }
 
@@ -1157,18 +1073,7 @@ bool image_encode(const OutImage& img, const std::string& ext_in, int quality, s
     if (ext == "sr") return sunraster_encode(img, out);
     if (ext == "gif") return gif_encode_still(img, out, err);
     if (ext == "ppm") return ppm_encode(img, out);
-    if (ext == "jp2")
-    {
-        if (img.depth == 32)
-        {
-            OutImage tmp = img;
-            tmp.depth = 16;
-            tmp.data.resize((size_t)img.w * img.h * img.c * 2);
-            for (size_t i = 0; i < (size_t)img.w * img.h * img.c; i++) ((uint16_t*)tmp.data.data())[i] = px_16(img, i);
-            return jp2_encode(tmp, out, err);
-        }
-        if (img.depth == 8 || img.depth == 16) return jp2_encode(img, out, err);
-    }
+    if (ext == "jp2") return jp2_encode(img, out, err);
     if (ext == "hdr")
     {
         const size_t npx = (size_t)img.w * img.h;

@@ -463,5 +463,7 @@
 "JPG quality: 0-100. Higher = better quality and bigger file. Default 100.":"Calidad JPG: 0-100. Más alto = mejor calidad y archivo más grande. Predeterminado 100.",
 "WebP quality: 1-100 = lossy (higher = better quality, bigger file), 101 = lossless. Default 101.":"Calidad WebP: 1-100 = con pérdida (más alto = mejor calidad, archivo más grande), 101 = sin pérdida. Predeterminado 101.",
 "TGA: 0 = no compression, 1 = RLE compression (lossless, smaller file). Default 0.":"TGA: 0 = sin compresión, 1 = compresión RLE (sin pérdida, archivo más pequeño). Predeterminado 0.",
-"%s has no quality setting.":"%s no tiene ajuste de calidad."
+"%s has no quality setting.":"%s no tiene ajuste de calidad.",
+"8-bit":"8 bits",
+"RePicturer only supports 8-bit output.\nThe AI models work in 8-bit, so a higher bit depth would not add any real color detail.":"RePicturer solo admite salida de 8 bits.\nLos modelos de IA trabajan en 8 bits, así que una profundidad mayor no añadiría detalle de color real."
 }

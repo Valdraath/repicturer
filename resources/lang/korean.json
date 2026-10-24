@@ -463,5 +463,7 @@
 "JPG quality: 0-100. Higher = better quality and bigger file. Default 100.":"JPG 품질: 0-100. 높을수록 화질이 좋아지고 파일이 커집니다. 기본값 100.",
 "WebP quality: 1-100 = lossy (higher = better quality, bigger file), 101 = lossless. Default 101.":"WebP 품질: 1-100 = 손실 압축(높을수록 화질이 좋고 파일이 큼), 101 = 무손실. 기본값 101.",
 "TGA: 0 = no compression, 1 = RLE compression (lossless, smaller file). Default 0.":"TGA: 0 = 압축 안 함, 1 = RLE 압축(무손실, 파일이 작아짐). 기본값 0.",
-"%s has no quality setting.":"%s에는 품질 설정이 없습니다."
+"%s has no quality setting.":"%s에는 품질 설정이 없습니다.",
+"8-bit":"8비트",
+"RePicturer only supports 8-bit output.\nThe AI models work in 8-bit, so a higher bit depth would not add any real color detail.":"RePicturer는 8비트 출력만 지원합니다.\nAI 모델이 8비트로 처리하므로 비트 깊이를 높여도 실제 색 정보는 늘어나지 않습니다."
 }
