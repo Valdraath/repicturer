@@ -2154,6 +2154,7 @@ namespace
     // ---- labels fit their space in every language: a text that is too long first gets a smaller font (down to 75 %),
     //      then it is cut with "..." and the full text is shown as a tooltip
     float g_fitRight = 0; // dialog-unit right edge for radio / check labels: inner edge of the last group box
+    float extListSize = 13; // font size the input file extension list is drawn at (set every frame)
 
     float TextW(const std::string& s, float size) { return ImGui::GetFont()->CalcTextSizeA(size, FLT_MAX, 0.0f, s.c_str()).x; }
 
@@ -2186,7 +2187,7 @@ namespace
             ImGui::SetTooltip("%s", full.c_str());
     }
 
-    void GroupBox(const std::string& title, float x, float y, float w, float h)
+    void GroupBox(const std::string& title, float x, float y, float w, float h, bool center = false)
     {
         ImDrawList* dl = ImGui::GetWindowDrawList();
         ImVec2 o = ImGui::GetWindowPos();
@@ -2194,9 +2195,10 @@ namespace
         ImVec2 p1 = ImVec2(p0.x + W(w), p0.y + H(h));
         const float fh = ImGui::GetFontSize();
         const float top = p0.y + fh * 0.5f;
-        const float tx = p0.x + 6 * g_s;
+        float tx = p0.x + 6 * g_s;
         const FitLabel f = Fit(title, (p1.x - 6 * g_s) - tx);
         const float tw = TextW(f.text, f.size);
+        if (center) tx = p0.x + (W(w) - tw) * 0.5f;
         dl->AddLine(ImVec2(p0.x, top), ImVec2(tx - 2 * g_s, top), LineColor());
         if (tx + tw + 2 * g_s < p1.x)
             dl->AddLine(ImVec2(tx + tw + 2 * g_s, top), ImVec2(p1.x, top), LineColor());
@@ -2678,6 +2680,7 @@ void DialogEvent::DrawMain(float s)
         const float boxW = std::min(195.0f, std::ceil(textW) + 12);
         GroupBox(L("IDC_STATIC_TANS_EXT_LIST"), 13, 57, boxW, 31);
         RowLabel(editExtList, 19, 69, 13 + boxW - 5);
+        extListSize = Fit(editExtList, W(13 + boxW - 5 - 19)).size; // the 8-bit text uses the same size
     }
 
     GroupBox(L("IDC_STATIC_OUTPUT_EXT"), 212, 57, 78, 30);
@@ -2726,10 +2729,14 @@ void DialogEvent::DrawMain(float s)
         }
     }
 
-    GroupBox(L("IDC_STATIC_OUTPUT_DEPTH"), 395, 57, 76, 29);
+    GroupBox(L("IDC_STATIC_OUTPUT_DEPTH"), 395, 57, 76, 29, true);
     {
         // fixed at 8 bit: plain text like the input file extensions, the reason in the tooltip
-        RowLabel(T("8-bit"), 401, 68, 467);
+        // same row and text size as the input file extensions, centered in the box
+        const std::string depth = T("8-bit");
+        const FitLabel f{depth, extListSize, false, true};
+        const ImVec2 o = ImGui::GetWindowPos();
+        DrawFit(f, ImVec2(o.x + P(395, 0).x + (W(76) - TextW(depth, extListSize)) * 0.5f, o.y + P(0, 69).y + (H(14) - extListSize) * 0.5f), depth);
         if (HoverRect(395, 57, 76, 29))
             ImGui::SetTooltip("%s", T("RePicturer only supports 8-bit output.\n"
                 "The AI models work in 8-bit, so a higher bit depth would not add any real color detail.").c_str());
