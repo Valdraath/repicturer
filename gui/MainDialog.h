@@ -9,7 +9,7 @@
 // the name the os shows (window title, taskbar, task manager, x11 WM_CLASS)
 #define APP_NAME "RePicturer"
 #define APP_NAME_W L"RePicturer"
-#define APP_VERSION_NUM "2.0"
+#define APP_VERSION_NUM "2.1"
 #define APP_VERSION "v" APP_VERSION_NUM
 #define APP_TITLE APP_NAME " " APP_VERSION   // title bar text
 

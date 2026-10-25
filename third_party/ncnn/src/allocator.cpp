@@ -90,7 +90,7 @@ static void free_memory_tracked(const VulkanDevice* vkdev, VkDeviceMemory memory
             g_vram_blocks.erase(it);
         }
     }
-    free_memory_tracked(vkdev, memory);
+    vkFreeMemory(vkdev->vkdevice(), memory, 0);
 }
 
 Allocator::~Allocator()

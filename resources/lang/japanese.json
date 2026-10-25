@@ -452,7 +452,7 @@
 "VRAM: %d MB free":"VRAM: 空き %d MB",
 "RAM: %d MB total, %d MB free":"RAM: 合計 %d MB、空き %d MB",
 "Let RePicturer use":"RePicturer の使用量",
-"VRAM: detecting...":"VRAM: 検出中...",
+"VRAM: Detecting...":"VRAM: 検出中...",
 "VRAM: no GPU found":"VRAM: GPU が見つかりません",
 "Only 1 valid value between 20 and 80 (percentage) is accepted.":"20 から 80 の有効な値 (パーセント) を 1 つだけ入力できます。",
 "VRAM: not used (CPU)":"VRAM: 使用しない (CPU)",

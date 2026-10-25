@@ -452,7 +452,7 @@
 "VRAM: %d MB free":"VRAM: 남음 %d MB",
 "RAM: %d MB total, %d MB free":"RAM: 전체 %d MB, 남음 %d MB",
 "Let RePicturer use":"RePicturer 사용량",
-"VRAM: detecting...":"VRAM: 감지 중...",
+"VRAM: Detecting...":"VRAM: 감지 중...",
 "VRAM: no GPU found":"VRAM: GPU 없음",
 "Only 1 valid value between 20 and 80 (percentage) is accepted.":"20에서 80 사이의 유효한 값(백분율) 1개만 입력할 수 있습니다.",
 "VRAM: not used (CPU)":"VRAM: 사용 안 함 (CPU)",

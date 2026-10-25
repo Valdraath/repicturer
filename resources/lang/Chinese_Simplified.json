@@ -452,7 +452,7 @@
 "VRAM: %d MB free":"显存: 空闲 %d MB",
 "RAM: %d MB total, %d MB free":"内存: 共 %d MB,空闲 %d MB",
 "Let RePicturer use":"允许 RePicturer 使用",
-"VRAM: detecting...":"显存: 检测中...",
+"VRAM: Detecting...":"显存: 检测中...",
 "VRAM: no GPU found":"显存: 未找到 GPU",
 "Only 1 valid value between 20 and 80 (percentage) is accepted.":"只接受 1 个 20 到 80 之间的有效值 (百分比)。",
 "VRAM: not used (CPU)":"显存: 未使用 (CPU)",

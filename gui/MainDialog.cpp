@@ -2776,8 +2776,8 @@ void DialogEvent::DrawMain(float s)
         for (size_t i = 0; i < gpus.size(); i++) shortItems[i + 1] = Format("GPU %d", gpus[i].index);
         if (gpuState == 1)
         {
-            items[0] += " - " + L2("MessageDetecting", "detecting...");
-            shortItems[0] = L2("MessageDetecting", "detecting...");
+            items[0] += " - " + L2("MessageDetecting", "Detecting...");
+            shortItems[0] = L2("MessageDetecting", "Detecting...");
         }
         if (Combo("##device", &idx, items, 372, 161, 122, true, nullptr, &shortItems)) SetDeviceFromCombo(idx);
         if (!ImGui::IsPopupOpen("##device") && (ImGui::IsItemHovered() || HoverRect(368, 147, 130, 37)))
@@ -3030,7 +3030,7 @@ void DialogEvent::DrawAppSetting(float s)
         else if (!gpus.empty()) gd = &gpus[0];
         std::string info;
         if (dev > (int)gpus.size()) info = T("VRAM: not used (CPU)");
-        else if (gpuState == 1) info = T("VRAM: detecting...");
+        else if (gpuState == 1) info = T("VRAM: Detecting...");
         else if (!gd) info = T("VRAM: no GPU found");
         else if (gd->totalMB > 0) info = Format(T("VRAM: %d MB total, %d MB free").c_str(), gd->totalMB, gd->heapMB);
         else info = Format(T("VRAM: %d MB free").c_str(), gd->heapMB);
