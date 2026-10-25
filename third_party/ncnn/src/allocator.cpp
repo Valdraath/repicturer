@@ -6,11 +6,92 @@
 #include "gpu.h"
 #include "pipeline.h"
 
+#include <atomic>
+#include <map>
+
 #if __ANDROID_API__ >= 26
 #include <android/hardware_buffer.h>
 #endif // __ANDROID_API__ >= 26
 
 namespace ncnn {
+
+// RePicturer: gpu memory limit and allocation failure reporting
+// (upstream ignored failed allocations: the tiles were skipped and the image came out partly empty)
+static const int VRAM_MAX_DEVICES = 16;
+static std::atomic<size_t> g_vram_limit[VRAM_MAX_DEVICES];
+static std::atomic<size_t> g_vram_used[VRAM_MAX_DEVICES];
+static Mutex g_vram_lock;
+static std::map<VkDeviceMemory, std::pair<int, size_t> > g_vram_blocks; // device local memory -> device, size
+static thread_local int t_alloc_failures = 0;
+
+void set_vram_limit(int device_index, size_t bytes)
+{
+    if (device_index >= 0 && device_index < VRAM_MAX_DEVICES) g_vram_limit[device_index] = bytes;
+}
+
+size_t get_vram_used(int device_index)
+{
+    return device_index >= 0 && device_index < VRAM_MAX_DEVICES ? g_vram_used[device_index].load() : 0;
+}
+
+int take_vk_alloc_failures()
+{
+    const int n = t_alloc_failures;
+    t_alloc_failures = 0;
+    return n;
+}
+
+static bool vram_is_device_local(const VulkanDevice* vkdev, uint32_t memory_type_index)
+{
+    return (vkdev->info.physicalDeviceMemoryProperties().memoryTypes[memory_type_index].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0;
+}
+
+// false = over the limit (counted as a failed allocation)
+static bool vram_reserve(const VulkanDevice* vkdev, size_t size, uint32_t memory_type_index)
+{
+    const int di = vkdev->info.device_index();
+    if (di < 0 || di >= VRAM_MAX_DEVICES || !vram_is_device_local(vkdev, memory_type_index)) return true;
+    const size_t limit = g_vram_limit[di];
+    MutexLockGuard guard(g_vram_lock);
+    if (limit && g_vram_used[di] + size > limit)
+    {
+        NCNN_LOGE("gpu memory limit reached (%d MB used, %d MB more needed, limit %d MB)", (int)(g_vram_used[di] >> 20), (int)(size >> 20), (int)(limit >> 20));
+        t_alloc_failures++;
+        return false;
+    }
+    g_vram_used[di] += size;
+    return true;
+}
+
+static void vram_unreserve(const VulkanDevice* vkdev, size_t size, uint32_t memory_type_index)
+{
+    const int di = vkdev->info.device_index();
+    if (di < 0 || di >= VRAM_MAX_DEVICES || !vram_is_device_local(vkdev, memory_type_index)) return;
+    g_vram_used[di] -= size;
+}
+
+static void vram_register(const VulkanDevice* vkdev, VkDeviceMemory memory, size_t size, uint32_t memory_type_index)
+{
+    const int di = vkdev->info.device_index();
+    if (di < 0 || di >= VRAM_MAX_DEVICES || !vram_is_device_local(vkdev, memory_type_index)) return;
+    MutexLockGuard guard(g_vram_lock);
+    g_vram_blocks[memory] = std::make_pair(di, size);
+}
+
+static void free_memory_tracked(const VulkanDevice* vkdev, VkDeviceMemory memory)
+{
+    if (!memory) return;
+    {
+        MutexLockGuard guard(g_vram_lock);
+        std::map<VkDeviceMemory, std::pair<int, size_t> >::iterator it = g_vram_blocks.find(memory);
+        if (it != g_vram_blocks.end())
+        {
+            g_vram_used[it->second.first] -= it->second.second;
+            g_vram_blocks.erase(it);
+        }
+    }
+    free_memory_tracked(vkdev, memory);
+}
 
 Allocator::~Allocator()
 {
@@ -437,6 +518,7 @@ VkBuffer VkAllocator::create_buffer(size_t size, VkBufferUsageFlags usage)
     if (ret != VK_SUCCESS)
     {
         NCNN_LOGE("vkCreateBuffer failed %d", ret);
+        t_alloc_failures++;
         return 0;
     }
 
@@ -445,6 +527,8 @@ VkBuffer VkAllocator::create_buffer(size_t size, VkBufferUsageFlags usage)
 
 VkDeviceMemory VkAllocator::allocate_memory(size_t size, uint32_t memory_type_index)
 {
+    if (!vram_reserve(vkdev, size, memory_type_index)) return 0;
+
     VkMemoryAllocateInfo memoryAllocateInfo;
     memoryAllocateInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     memoryAllocateInfo.pNext = 0;
@@ -456,14 +540,19 @@ VkDeviceMemory VkAllocator::allocate_memory(size_t size, uint32_t memory_type_in
     if (ret != VK_SUCCESS)
     {
         NCNN_LOGE("vkAllocateMemory failed %d", ret);
+        vram_unreserve(vkdev, size, memory_type_index);
+        t_alloc_failures++;
         return 0;
     }
 
+    vram_register(vkdev, memory, size, memory_type_index);
     return memory;
 }
 
 VkDeviceMemory VkAllocator::allocate_dedicated_memory(size_t size, uint32_t memory_type_index, VkImage image, VkBuffer buffer)
 {
+    if (!vram_reserve(vkdev, size, memory_type_index)) return 0;
+
     VkMemoryAllocateInfo memoryAllocateInfo;
     memoryAllocateInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     memoryAllocateInfo.pNext = 0;
@@ -482,9 +571,12 @@ VkDeviceMemory VkAllocator::allocate_dedicated_memory(size_t size, uint32_t memo
     if (ret != VK_SUCCESS)
     {
         NCNN_LOGE("vkAllocateMemory failed %d", ret);
+        vram_unreserve(vkdev, size, memory_type_index);
+        t_alloc_failures++;
         return 0;
     }
 
+    vram_register(vkdev, memory, size, memory_type_index);
     return memory;
 }
 
@@ -640,7 +732,7 @@ void VkBlobAllocator::clear()
             vkUnmapMemory(vkdev->vkdevice(), ptr->memory);
 
         vkDestroyBuffer(vkdev->vkdevice(), ptr->buffer, 0);
-        vkFreeMemory(vkdev->vkdevice(), ptr->memory, 0);
+        free_memory_tracked(vkdev, ptr->memory);
 
         delete ptr;
     }
@@ -659,7 +751,7 @@ void VkBlobAllocator::clear()
         //             it++;
         //         }
 
-        vkFreeMemory(vkdev->vkdevice(), memory, 0);
+        free_memory_tracked(vkdev, memory);
     }
     d->image_memory_blocks.clear();
 
@@ -719,6 +811,11 @@ VkBufferMemory* VkBlobAllocator::fastMalloc(size_t size)
     VkBufferMemory* block = new VkBufferMemory;
 
     block->buffer = create_buffer(new_block_size, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+    if (!block->buffer) // RePicturer: failed allocations give up cleanly (upstream went on with a null handle)
+    {
+        delete block;
+        return 0;
+    }
     block->offset = 0;
 
     // TODO respect VK_KHR_dedicated_allocation ?
@@ -755,6 +852,12 @@ VkBufferMemory* VkBlobAllocator::fastMalloc(size_t size)
     }
 
     block->memory = allocate_memory(memoryRequirements.size, buffer_memory_type_index);
+    if (!block->memory) // RePicturer: out of gpu memory or over the limit: no half-made block
+    {
+        vkDestroyBuffer(vkdev->vkdevice(), block->buffer, 0);
+        delete block;
+        return 0;
+    }
 
     // ignore memoryRequirements.alignment as we always bind at zero offset
     vkBindBufferMemory(vkdev->vkdevice(), block->buffer, block->memory, 0);
@@ -1034,6 +1137,12 @@ VkImageMemory* VkBlobAllocator::fastMalloc(int w, int h, int c, size_t elemsize,
 
     // bind at memory offset
     ptr->memory = allocate_memory(new_block_size, image_memory_type_index);
+    if (!ptr->memory) // RePicturer: out of gpu memory or over the limit: no half-made block
+    {
+        vkDestroyImage(vkdev->vkdevice(), ptr->image, 0);
+        delete ptr;
+        return 0;
+    }
     ptr->bind_offset = 0;
     ptr->bind_capacity = aligned_size;
 
@@ -1218,7 +1327,7 @@ void VkWeightAllocator::clear()
             vkUnmapMemory(vkdev->vkdevice(), ptr->memory);
 
         vkDestroyBuffer(vkdev->vkdevice(), ptr->buffer, 0);
-        vkFreeMemory(vkdev->vkdevice(), ptr->memory, 0);
+        free_memory_tracked(vkdev, ptr->memory);
 
         delete ptr;
     }
@@ -1232,7 +1341,7 @@ void VkWeightAllocator::clear()
             vkUnmapMemory(vkdev->vkdevice(), ptr->memory);
 
         vkDestroyBuffer(vkdev->vkdevice(), ptr->buffer, 0);
-        vkFreeMemory(vkdev->vkdevice(), ptr->memory, 0);
+        free_memory_tracked(vkdev, ptr->memory);
 
         delete ptr;
     }
@@ -1244,7 +1353,7 @@ void VkWeightAllocator::clear()
     {
         VkDeviceMemory memory = d->image_memory_blocks[i];
 
-        vkFreeMemory(vkdev->vkdevice(), memory, 0);
+        free_memory_tracked(vkdev, memory);
     }
     d->image_memory_blocks.clear();
 
@@ -1252,7 +1361,7 @@ void VkWeightAllocator::clear()
     {
         VkDeviceMemory memory = d->dedicated_image_memory_blocks[i];
 
-        vkFreeMemory(vkdev->vkdevice(), memory, 0);
+        free_memory_tracked(vkdev, memory);
     }
     d->dedicated_image_memory_blocks.clear();
 }
@@ -1296,6 +1405,11 @@ VkBufferMemory* VkWeightAllocator::fastMalloc(size_t size)
     VkBufferMemory* block = new VkBufferMemory;
 
     block->buffer = create_buffer(new_block_size, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+    if (!block->buffer) // RePicturer: failed allocations give up cleanly (upstream went on with a null handle)
+    {
+        delete block;
+        return 0;
+    }
     block->offset = 0;
 
     if (vkdev->info.support_VK_KHR_get_memory_requirements2() && vkdev->info.support_VK_KHR_dedicated_allocation())
@@ -1349,6 +1463,12 @@ VkBufferMemory* VkWeightAllocator::fastMalloc(size_t size)
             }
 
             block->memory = allocate_dedicated_memory(memoryRequirements2.memoryRequirements.size, buffer_memory_type_index, 0, block->buffer);
+            if (!block->memory) // RePicturer: out of gpu memory or over the limit: no half-made block
+            {
+                vkDestroyBuffer(vkdev->vkdevice(), block->buffer, 0);
+                delete block;
+                return 0;
+            }
 
             // ignore memoryRequirements2.memoryRequirements.alignment as we always bind at zero offset
             vkBindBufferMemory(vkdev->vkdevice(), block->buffer, block->memory, 0);
@@ -1408,6 +1528,12 @@ VkBufferMemory* VkWeightAllocator::fastMalloc(size_t size)
     }
 
     block->memory = allocate_memory(memoryRequirements.size, buffer_memory_type_index);
+    if (!block->memory) // RePicturer: out of gpu memory or over the limit: no half-made block
+    {
+        vkDestroyBuffer(vkdev->vkdevice(), block->buffer, 0);
+        delete block;
+        return 0;
+    }
 
     // ignore memoryRequirements.alignment as we always bind at zero offset
     vkBindBufferMemory(vkdev->vkdevice(), block->buffer, block->memory, 0);
@@ -1565,6 +1691,12 @@ VkImageMemory* VkWeightAllocator::fastMalloc(int w, int h, int c, size_t elemsiz
 
             // bind memory
             ptr->memory = allocate_dedicated_memory(memoryRequirements2.memoryRequirements.size, image_memory_type_index, ptr->image, 0);
+            if (!ptr->memory) // RePicturer: out of gpu memory or over the limit: no half-made block
+            {
+                vkDestroyImage(vkdev->vkdevice(), ptr->image, 0);
+                delete ptr;
+                return 0;
+            }
             ptr->bind_offset = 0;
             ptr->bind_capacity = memoryRequirements2.memoryRequirements.size;
 
@@ -1672,6 +1804,12 @@ VkImageMemory* VkWeightAllocator::fastMalloc(int w, int h, int c, size_t elemsiz
 
     // bind at memory offset
     ptr->memory = allocate_memory(new_block_size, image_memory_type_index);
+    if (!ptr->memory) // RePicturer: out of gpu memory or over the limit: no half-made block
+    {
+        vkDestroyImage(vkdev->vkdevice(), ptr->image, 0);
+        delete ptr;
+        return 0;
+    }
     ptr->bind_offset = 0;
     ptr->bind_capacity = aligned_size;
 
@@ -1763,7 +1901,7 @@ void VkStagingAllocator::clear()
 
         vkUnmapMemory(vkdev->vkdevice(), ptr->memory);
         vkDestroyBuffer(vkdev->vkdevice(), ptr->buffer, 0);
-        vkFreeMemory(vkdev->vkdevice(), ptr->memory, 0);
+        free_memory_tracked(vkdev, ptr->memory);
 
         delete ptr;
     }
@@ -1794,6 +1932,11 @@ VkBufferMemory* VkStagingAllocator::fastMalloc(size_t size)
     VkBufferMemory* ptr = new VkBufferMemory;
 
     ptr->buffer = create_buffer(size, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+    if (!ptr->buffer) // RePicturer: failed allocations give up cleanly (upstream went on with a null handle)
+    {
+        delete ptr;
+        return 0;
+    }
     ptr->offset = 0;
 
     VkMemoryRequirements memoryRequirements;
@@ -1806,6 +1949,12 @@ VkBufferMemory* VkStagingAllocator::fastMalloc(size_t size)
     }
 
     ptr->memory = allocate_memory(memoryRequirements.size, buffer_memory_type_index);
+    if (!ptr->memory) // RePicturer: out of gpu memory or over the limit: no half-made block
+    {
+        vkDestroyBuffer(vkdev->vkdevice(), ptr->buffer, 0);
+        delete ptr;
+        return 0;
+    }
 
     // ignore memoryRequirements.alignment as we always bind at zero offset
     vkBindBufferMemory(vkdev->vkdevice(), ptr->buffer, ptr->memory, 0);
@@ -1903,6 +2052,11 @@ VkBufferMemory* VkWeightStagingAllocator::fastMalloc(size_t size)
     VkBufferMemory* ptr = new VkBufferMemory;
 
     ptr->buffer = create_buffer(size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+    if (!ptr->buffer) // RePicturer: failed allocations give up cleanly (upstream went on with a null handle)
+    {
+        delete ptr;
+        return 0;
+    }
     ptr->offset = 0;
 
     VkMemoryRequirements memoryRequirements;
@@ -1915,6 +2069,12 @@ VkBufferMemory* VkWeightStagingAllocator::fastMalloc(size_t size)
     }
 
     ptr->memory = allocate_memory(memoryRequirements.size, buffer_memory_type_index);
+    if (!ptr->memory) // RePicturer: out of gpu memory or over the limit: no half-made block
+    {
+        vkDestroyBuffer(vkdev->vkdevice(), ptr->buffer, 0);
+        delete ptr;
+        return 0;
+    }
 
     // ignore memoryRequirements.alignment as we always bind at zero offset
     vkBindBufferMemory(vkdev->vkdevice(), ptr->buffer, ptr->memory, 0);
@@ -1937,7 +2097,7 @@ void VkWeightStagingAllocator::fastFree(VkBufferMemory* ptr)
 
     vkUnmapMemory(vkdev->vkdevice(), ptr->memory);
     vkDestroyBuffer(vkdev->vkdevice(), ptr->buffer, 0);
-    vkFreeMemory(vkdev->vkdevice(), ptr->memory, 0);
+    free_memory_tracked(vkdev, ptr->memory);
 
     delete ptr;
 }
@@ -2103,7 +2263,7 @@ VkImageMemory* VkAndroidHardwareBufferImageAllocator::fastMalloc(int /*w*/, int 
     {
         NCNN_LOGE("vkCreateImageView failed %d", ret);
         vkDestroyImage(vkdev->vkdevice(), image, 0);
-        vkFreeMemory(vkdev->vkdevice(), memory, 0);
+        free_memory_tracked(vkdev, memory);
         return 0;
     }
 
@@ -2122,7 +2282,7 @@ void VkAndroidHardwareBufferImageAllocator::fastFree(VkImageMemory* ptr)
 {
     vkDestroyImageView(vkdev->vkdevice(), ptr->imageview, 0);
     vkDestroyImage(vkdev->vkdevice(), ptr->image, 0);
-    vkFreeMemory(vkdev->vkdevice(), ptr->memory, 0);
+    free_memory_tracked(vkdev, ptr->memory);
 
     delete ptr;
 }

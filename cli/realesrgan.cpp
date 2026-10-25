@@ -14,10 +14,8 @@
 
 #include "realesrgan_preproc.comp.hex.h"
 #include "realesrgan_postproc.comp.hex.h"
-#include "realesrgan_preproc_tta.comp.hex.h"
-#include "realesrgan_postproc_tta.comp.hex.h"
 
-RealESRGAN::RealESRGAN(int gpuid, bool _tta_mode, int num_threads)
+RealESRGAN::RealESRGAN(int gpuid, int num_threads)
 {
     vkdev = gpuid == -1 ? 0 : ncnn::get_gpu_device(gpuid);
 
@@ -28,7 +26,6 @@ RealESRGAN::RealESRGAN(int gpuid, bool _tta_mode, int num_threads)
     bicubic_2x = 0;
     bicubic_3x = 0;
     bicubic_4x = 0;
-    tta_mode = _tta_mode;
 }
 
 RealESRGAN::~RealESRGAN()
@@ -81,10 +78,7 @@ int RealESRGAN::load(const std::string& parampath, const std::string& modelpath)
                 ncnn::MutexLockGuard guard(lock);
                 if (spirv.empty())
                 {
-                    if (tta_mode)
-                        compile_spirv_module(realesrgan_preproc_tta_comp_data, sizeof(realesrgan_preproc_tta_comp_data), net.opt, spirv);
-                    else
-                        compile_spirv_module(realesrgan_preproc_comp_data, sizeof(realesrgan_preproc_comp_data), net.opt, spirv);
+                    compile_spirv_module(realesrgan_preproc_comp_data, sizeof(realesrgan_preproc_comp_data), net.opt, spirv);
                 }
             }
 
@@ -100,10 +94,7 @@ int RealESRGAN::load(const std::string& parampath, const std::string& modelpath)
                 ncnn::MutexLockGuard guard(lock);
                 if (spirv.empty())
                 {
-                    if (tta_mode)
-                        compile_spirv_module(realesrgan_postproc_tta_comp_data, sizeof(realesrgan_postproc_tta_comp_data), net.opt, spirv);
-                    else
-                        compile_spirv_module(realesrgan_postproc_comp_data, sizeof(realesrgan_postproc_comp_data), net.opt, spirv);
+                    compile_spirv_module(realesrgan_postproc_comp_data, sizeof(realesrgan_postproc_comp_data), net.opt, spirv);
                 }
             }
 
@@ -195,63 +186,11 @@ int RealESRGAN::process_cpu(const ncnn::Mat& inimage, ncnn::Mat& outimage) const
                 in_tile = padded;
             }
 
-            const int ntta = tta_mode ? 8 : 1;
             ncnn::Mat acc;
-            for (int ti = 0; ti < ntta; ti++)
             {
-                // tta: flip x / flip y / transpose combinations
-                const bool transpose = ti >= 4;
-                const bool flipx = (ti & 1) != 0;
-                const bool flipy = (ti & 2) != 0;
-                const int iw = in_tile.w, ih = in_tile.h;
-                const int tw = transpose ? ih : iw, th = transpose ? iw : ih;
-                ncnn::Mat t(tw, th, 3);
-                for (int q = 0; q < 3; q++)
-                {
-                    const ncnn::Mat src = in_tile.channel(q);
-                    ncnn::Mat dst = t.channel(q);
-                    for (int y = 0; y < th; y++)
-                    {
-                        float* drow = dst.row(y);
-                        for (int x = 0; x < tw; x++)
-                        {
-                            int sx = transpose ? y : x, sy = transpose ? x : y;
-                            if (flipx) sx = iw - 1 - sx;
-                            if (flipy) sy = ih - 1 - sy;
-                            drow[x] = src.row(sy)[sx];
-                        }
-                    }
-                }
-
-                ncnn::Mat o;
-                {
-                    ncnn::Extractor ex = net.create_extractor();
-                    ex.input("data", t);
-                    ex.extract("output", o);
-                }
-
-                // inverse transform into the accumulator (o has the transformed geometry)
-                const int ow = transpose ? o.h : o.w, oh = transpose ? o.w : o.h;
-                if (ti == 0)
-                {
-                    acc.create(ow, oh, 3);
-                    acc.fill(0.f);
-                }
-                for (int q = 0; q < 3; q++)
-                {
-                    const ncnn::Mat src = o.channel(q);
-                    ncnn::Mat dst = acc.channel(q);
-                    for (int y = 0; y < oh; y++)
-                    {
-                        float* drow = dst.row(y);
-                        for (int x = 0; x < ow; x++)
-                        {
-                            int ux = flipx ? ow - 1 - x : x;
-                            int uy = flipy ? oh - 1 - y : y;
-                            drow[x] += transpose ? src.row(ux)[uy] : src.row(uy)[ux];
-                        }
-                    }
-                }
+                ncnn::Extractor ex = net.create_extractor();
+                ex.input("data", in_tile);
+                ex.extract("output", acc);
             }
 
             ncnn::Mat out_alpha_tile;
@@ -263,7 +202,7 @@ int RealESRGAN::process_cpu(const ncnn::Mat& inimage, ncnn::Mat& outimage) const
 
             // crop the padded border and write
             ncnn::Mat out(tile_w_nopad * scale, tile_h_nopad * scale, channels);
-            const float norm = 255.f / ntta;
+            const float norm = 255.f;
             for (int q = 0; q < 3; q++)
             {
                 float* outptr = out.channel(q);
@@ -374,146 +313,6 @@ int RealESRGAN::process(const ncnn::Mat& inimage, ncnn::Mat& outimage) const
         {
             const int tile_w_nopad = std::min((xi + 1) * TILE_SIZE_X, w) - xi * TILE_SIZE_X;
 
-            if (tta_mode)
-            {
-                // preproc
-                ncnn::VkMat in_tile_gpu[8];
-                ncnn::VkMat in_alpha_tile_gpu;
-                {
-                    // crop tile
-                    int tile_x0 = xi * TILE_SIZE_X - prepadding;
-                    int tile_x1 = std::min((xi + 1) * TILE_SIZE_X, w) + prepadding;
-                    int tile_y0 = yi * TILE_SIZE_Y - prepadding;
-                    int tile_y1 = std::min((yi + 1) * TILE_SIZE_Y, h) + prepadding;
-
-                    in_tile_gpu[0].create(tile_x1 - tile_x0, tile_y1 - tile_y0, 3, in_out_tile_elemsize, 1, blob_vkallocator);
-                    in_tile_gpu[1].create(tile_x1 - tile_x0, tile_y1 - tile_y0, 3, in_out_tile_elemsize, 1, blob_vkallocator);
-                    in_tile_gpu[2].create(tile_x1 - tile_x0, tile_y1 - tile_y0, 3, in_out_tile_elemsize, 1, blob_vkallocator);
-                    in_tile_gpu[3].create(tile_x1 - tile_x0, tile_y1 - tile_y0, 3, in_out_tile_elemsize, 1, blob_vkallocator);
-                    in_tile_gpu[4].create(tile_y1 - tile_y0, tile_x1 - tile_x0, 3, in_out_tile_elemsize, 1, blob_vkallocator);
-                    in_tile_gpu[5].create(tile_y1 - tile_y0, tile_x1 - tile_x0, 3, in_out_tile_elemsize, 1, blob_vkallocator);
-                    in_tile_gpu[6].create(tile_y1 - tile_y0, tile_x1 - tile_x0, 3, in_out_tile_elemsize, 1, blob_vkallocator);
-                    in_tile_gpu[7].create(tile_y1 - tile_y0, tile_x1 - tile_x0, 3, in_out_tile_elemsize, 1, blob_vkallocator);
-
-                    if (channels == 4)
-                    {
-                        in_alpha_tile_gpu.create(tile_w_nopad, tile_h_nopad, 1, in_out_tile_elemsize, 1, blob_vkallocator);
-                    }
-
-                    std::vector<ncnn::VkMat> bindings(10);
-                    bindings[0] = in_gpu;
-                    bindings[1] = in_tile_gpu[0];
-                    bindings[2] = in_tile_gpu[1];
-                    bindings[3] = in_tile_gpu[2];
-                    bindings[4] = in_tile_gpu[3];
-                    bindings[5] = in_tile_gpu[4];
-                    bindings[6] = in_tile_gpu[5];
-                    bindings[7] = in_tile_gpu[6];
-                    bindings[8] = in_tile_gpu[7];
-                    bindings[9] = in_alpha_tile_gpu;
-
-                    std::vector<ncnn::vk_constant_type> constants(13);
-                    constants[0].i = in_gpu.w;
-                    constants[1].i = in_gpu.h;
-                    constants[2].i = in_gpu.cstep;
-                    constants[3].i = in_tile_gpu[0].w;
-                    constants[4].i = in_tile_gpu[0].h;
-                    constants[5].i = in_tile_gpu[0].cstep;
-                    constants[6].i = prepadding;
-                    constants[7].i = prepadding;
-                    constants[8].i = xi * TILE_SIZE_X;
-                    constants[9].i = std::min(yi * TILE_SIZE_Y, prepadding);
-                    constants[10].i = channels;
-                    constants[11].i = in_alpha_tile_gpu.w;
-                    constants[12].i = in_alpha_tile_gpu.h;
-
-                    ncnn::VkMat dispatcher;
-                    dispatcher.w = in_tile_gpu[0].w;
-                    dispatcher.h = in_tile_gpu[0].h;
-                    dispatcher.c = channels;
-
-                    cmd.record_pipeline(realesrgan_preproc, bindings, constants, dispatcher);
-                }
-
-                // realesrgan
-                ncnn::VkMat out_tile_gpu[8];
-                for (int ti = 0; ti < 8; ti++)
-                {
-                    ncnn::Extractor ex = net.create_extractor();
-
-                    ex.set_blob_vkallocator(blob_vkallocator);
-                    ex.set_workspace_vkallocator(blob_vkallocator);
-                    ex.set_staging_vkallocator(staging_vkallocator);
-
-                    ex.input("data", in_tile_gpu[ti]);
-
-                    if (ex.extract("output", out_tile_gpu[ti], cmd) != 0) gpu_err = -1;
-
-                    {
-                        if (cmd.submit_and_wait() != 0) gpu_err = -1;
-                        cmd.reset();
-                    }
-                }
-
-                ncnn::VkMat out_alpha_tile_gpu;
-                if (channels == 4)
-                {
-                    if (scale == 1)
-                    {
-                        out_alpha_tile_gpu = in_alpha_tile_gpu;
-                    }
-                    if (scale == 2)
-                    {
-                        bicubic_2x->forward(in_alpha_tile_gpu, out_alpha_tile_gpu, cmd, opt);
-                    }
-                    if (scale == 3)
-                    {
-                        bicubic_3x->forward(in_alpha_tile_gpu, out_alpha_tile_gpu, cmd, opt);
-                    }
-                    if (scale == 4)
-                    {
-                        bicubic_4x->forward(in_alpha_tile_gpu, out_alpha_tile_gpu, cmd, opt);
-                    }
-                }
-
-                // postproc
-                {
-                    std::vector<ncnn::VkMat> bindings(10);
-                    bindings[0] = out_tile_gpu[0];
-                    bindings[1] = out_tile_gpu[1];
-                    bindings[2] = out_tile_gpu[2];
-                    bindings[3] = out_tile_gpu[3];
-                    bindings[4] = out_tile_gpu[4];
-                    bindings[5] = out_tile_gpu[5];
-                    bindings[6] = out_tile_gpu[6];
-                    bindings[7] = out_tile_gpu[7];
-                    bindings[8] = out_alpha_tile_gpu;
-                    bindings[9] = out_gpu;
-
-                    std::vector<ncnn::vk_constant_type> constants(13);
-                    constants[0].i = out_tile_gpu[0].w;
-                    constants[1].i = out_tile_gpu[0].h;
-                    constants[2].i = out_tile_gpu[0].cstep;
-                    constants[3].i = out_gpu.w;
-                    constants[4].i = out_gpu.h;
-                    constants[5].i = out_gpu.cstep;
-                    constants[6].i = xi * TILE_SIZE_X * scale;
-                    constants[7].i = std::min(TILE_SIZE_X * scale, out_gpu.w - xi * TILE_SIZE_X * scale);
-                    constants[8].i = prepadding * scale;
-                    constants[9].i = prepadding * scale;
-                    constants[10].i = channels;
-                    constants[11].i = out_alpha_tile_gpu.w;
-                    constants[12].i = out_alpha_tile_gpu.h;
-
-                    ncnn::VkMat dispatcher;
-                    dispatcher.w = std::min(TILE_SIZE_X * scale, out_gpu.w - xi * TILE_SIZE_X * scale);
-                    dispatcher.h = out_gpu.h;
-                    dispatcher.c = channels;
-
-                    cmd.record_pipeline(realesrgan_postproc, bindings, constants, dispatcher);
-                }
-            }
-            else
             {
                 // preproc
                 ncnn::VkMat in_tile_gpu;
@@ -662,6 +461,9 @@ int RealESRGAN::process(const ncnn::Mat& inimage, ncnn::Mat& outimage) const
         }
     }
 
+    // free the memory of this picture: kept in the pool, it piled up over a folder (sized for the biggest picture of every thread)
+    blob_vkallocator->clear();
+    staging_vkallocator->clear();
     vkdev->reclaim_blob_allocator(blob_vkallocator);
     vkdev->reclaim_staging_allocator(staging_vkallocator);
 

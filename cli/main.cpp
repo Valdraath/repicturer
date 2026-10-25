@@ -18,6 +18,7 @@
 #include <deque>
 #include <map>
 #include <mutex>
+#include <shared_mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -32,6 +33,7 @@
 #include "cpu.h"
 #include "gpu.h"
 #include "platform.h"
+#include "allocator.h"
 
 #include "waifu2x.h"
 #include "realcugan.h"
@@ -89,7 +91,12 @@ static void print_usage()
         "  -c, --syncgap n           Real-CUGAN sync gap mode 0-3 (default=3, 0 = off)\n"
         "  -g, --gpu id              gpu device to use (-1=cpu, default=auto) can be 0,1,2 for multi-gpu\n"
         "  -j, --jobs l:p:s          thread count for load/proc/save (default=1:2:2) can be 1:2,2,2:2 for multi-gpu\n"
-        "  -x, --tta                 enable tta mode\n"
+        "                            proc 1-32 per gpu\n"
+        "      --vram-percent p      use at most p % (20-80, default 60) of the gpu memory that is free when the\n"
+        "                            conversion starts; an image that runs out is retried up to 3 times with a\n"
+        "                            smaller tile size, then the conversion stops\n"
+        "      --ram-percent p       use at most p % (20-80, default 60) of the RAM that is free when the conversion\n"
+        "                            starts for the images in progress; pictures wait until enough is free\n"
         "  -f, --format fmt          output format png/jpg/webp/bmp/jp2/sr/tif/hdr/exr/ppm/tga/gif (default=ext/png)\n"
         "                            animated gif / webp inputs stay animated (saved as .gif / .webp)\n"
         "  -q, --output_quality q    jpg 0-100 (100), webp 1-100 or 101=lossless (101), tga 0/1 = rle off/on\n"
@@ -129,7 +136,6 @@ struct Options
     std::vector<int> jobs_proc;
     int jobs_save = 2;
     bool verbose = false;
-    bool tta = false;
     std::string format = "png";
     bool format_set = false;
     int quality = -1;
@@ -139,6 +145,8 @@ struct Options
     bool list_gpu = false;
     bool progress = false;
     int syncgap = -1;
+    int vram_percent = 60;
+    int ram_percent = 60;
 };
 
 static std::vector<int> parse_int_array(const std::string& s)
@@ -181,10 +189,10 @@ static int parse_args(const std::vector<path_t>& args, Options& o)
         {'h', "help", false}, {'v', "verbose", false}, {'i', "input", true}, {'o', "output", true},
         {'n', "noise_level", true}, {'s', "scale_ratio", true}, {'W', "scale_width", true}, {'H', "scale_height", true},
         {'M', "mode", true}, {'t', "tile_size", true}, {'m', "model_dir", true}, {'g', "gpu", true},
-        {'j', "jobs", true}, {'x', "tta", false}, {'f', "format", true}, {'q', "output_quality", true},
+        {'j', "jobs", true}, {'f', "format", true}, {'q', "output_quality", true},
         {'l', "input_extension_list", true}, {'r', "recursive", false},
         {'k', "no_overwrite", false}, {'L', "file_list", true}, {0, "list-gpu", false}, {0, "progress", false},
-        {0, "output_extention", true}, {0, "input_extention_list", true}, {'c', "syncgap", true},
+        {0, "output_extention", true}, {0, "input_extention_list", true}, {'c', "syncgap", true}, {0, "vram-percent", true}, {0, "ram-percent", true},
     };
     const int nspec = (int)(sizeof(specs) / sizeof(specs[0]));
 
@@ -245,6 +253,14 @@ static int parse_args(const std::vector<path_t>& args, Options& o)
             else { fprintf(stderr, "invalid mode argument\n"); return -1; }
         }
         else if (l == "tile_size") o.tilesize = parse_int_array(val);
+        else if (l == "ram-percent")
+        {
+            if (!parse_int(val, o.ram_percent) || o.ram_percent < 20 || o.ram_percent > 80) { fprintf(stderr, "invalid ram-percent argument (20-80)\n"); return -1; }
+        }
+        else if (l == "vram-percent")
+        {
+            if (!parse_int(val, o.vram_percent) || o.vram_percent < 20 || o.vram_percent > 80) { fprintf(stderr, "invalid vram-percent argument (20-80)\n"); return -1; }
+        }
         else if (l == "model_dir") o.model = pval;
         else if (l == "gpu") o.gpuid = parse_int_array(val);
         else if (l == "jobs")
@@ -255,7 +271,6 @@ static int parse_args(const std::vector<path_t>& args, Options& o)
             o.jobs_proc = parse_int_array(val.substr(c1 + 1, c2 - c1 - 1));
             o.jobs_save = atoi(val.substr(c2 + 1).c_str());
         }
-        else if (l == "tta") o.tta = true;
         else if (l == "format" || l == "output_extention") { o.format = val; o.format_set = true; }
         else if (l == "output_quality") { if (!parse_int(val, o.quality)) { fprintf(stderr, "invalid output_quality argument\n"); return -1; } }
         else if (l == "input_extension_list" || l == "input_extention_list")
@@ -330,6 +345,7 @@ struct Task
     std::unique_ptr<AnimFrames> anim;     // animated gif / webp: all frames
     std::vector<unsigned char> encoded;   // animation already encoded by the proc worker
     bool userFormat = true;               // false when the format was switched to keep an animation
+    size_t ram = 0;                       // bytes reserved in the RAM limit until it is saved (or failed)
 };
 
 // ============================================================================ processing plan (caffe ReconstructImage, generalized)
@@ -609,6 +625,8 @@ class Processor
 public:
     virtual ~Processor() {}
     virtual int process(const ncnn::Mat& in, ncnn::Mat& out) const = 0;
+    virtual int get_tile() const = 0;
+    virtual void set_tile(int t) = 0; // only while no other thread runs this network (retry under the exclusive lock)
 };
 
 template<typename T>
@@ -618,6 +636,8 @@ public:
     explicit ProcessorT(T* n) : net(n) {}
     ~ProcessorT() { delete net; }
     int process(const ncnn::Mat& in, ncnn::Mat& out) const { return net->process(in, out); }
+    int get_tile() const { return net->tilesize; }
+    void set_tile(int t) { net->tilesize = t; }
     T* net;
 };
 
@@ -629,16 +649,26 @@ struct GpuNets
     uint32_t heap_budget = 0;
     uint32_t heap_total = 0;     // whole budget (Real-ESRGAN runs one image at a time per gpu)
     std::mutex run_lock;         // serializes Real-ESRGAN inference on this gpu
+    std::shared_mutex rw;        // network passes share it; a retry after running out of memory takes it alone
+    std::atomic<bool> single{false}; // ran out of gpu memory once: from then on one picture at a time on this gpu
+    std::atomic<int> tile_cap{0};    // and at most this split size (the one that worked in the retry)
     std::mutex lock;
     std::map<path_t, Processor*> nets;
     std::map<path_t, bool> failed;
 };
 
+static int auto_tilesize_mb(uint32_t hb, int scale);
+
 static int auto_tilesize(const GpuNets& g, int scale)
 {
     if (g.gpuid == -1) return 400;
     // Real-ESRGAN is serialized per gpu, so it gets the whole memory budget
-    const uint32_t hb = g_model.engine == ENGINE_REALESRGAN && g.heap_total ? g.heap_total : g.heap_budget;
+    return auto_tilesize_mb(g_model.engine == ENGINE_REALESRGAN && g.heap_total ? g.heap_total : g.heap_budget, scale);
+}
+
+// the automatic split size for a memory budget (MB)
+static int auto_tilesize_mb(uint32_t hb, int scale)
+{
     switch (g_model.tile_policy)
     {
     case TILE_POLICY_CUNET:
@@ -654,6 +684,22 @@ static int auto_tilesize(const GpuNets& g, int scale)
     }
 }
 
+// the largest tile whose estimated memory fits this thread's share (the auto table above: memory grows with tile^2)
+static int fit_tilesize(const GpuNets& g, int scale)
+{
+    const uint32_t hb = g_model.engine == ENGINE_REALESRGAN && g.heap_total ? g.heap_total : g.heap_budget;
+    double base_tile = 400, base_mb = 1900;
+    switch (g_model.tile_policy)
+    {
+    case TILE_POLICY_CUNET: base_mb = 2600; break;
+    case TILE_POLICY_REALCUGAN: base_mb = scale == 3 ? 3300 : scale == 4 ? 1690 : 1300; break;
+    case TILE_POLICY_REALESRGAN: base_tile = 200; base_mb = 1900; break;
+    default: break;
+    }
+    const int t = (int)(base_tile * sqrt((double)hb / base_mb)) / 4 * 4;
+    return std::max(32, t);
+}
+
 static const Processor* get_net(GpuNets* g, const NetSpec& spec, std::string& err)
 {
     std::lock_guard<std::mutex> guard(g->lock);
@@ -667,12 +713,25 @@ static const Processor* get_net(GpuNets* g, const NetSpec& spec, std::string& er
 
     const path_t param = path_join(g_model.dir, spec.base + PATHSTR(".param"));
     const path_t bin = path_join(g_model.dir, spec.base + PATHSTR(".bin"));
-    const int tile = g->tilesize > 0 ? g->tilesize : auto_tilesize(*g, spec.scale);
+    int tile = g->tilesize > 0 ? g->tilesize : auto_tilesize(*g, spec.scale);
+    if (g->tilesize > 0 && g->gpuid != -1)
+    {
+        // a manual split size that clearly needs more than this thread's share of the memory limit is lowered
+        const int fit = fit_tilesize(*g, spec.scale);
+        if (tile > fit)
+        {
+            if (g_opt.progress)
+                out_line(stdout, "TILEFIT\t" + std::to_string(g->gpuid) + "\t" + std::to_string(tile) + "\t" + std::to_string(fit));
+            else
+                out_line(stderr, "split size " + std::to_string(tile) + " needs more than the gpu memory limit allows, using " + std::to_string(fit));
+            tile = fit;
+        }
+    }
     Processor* proc = 0;
 
     if (g_model.engine == ENGINE_WAIFU2X)
     {
-        Waifu2x* w = new Waifu2x(g->gpuid, g_opt.tta, g->num_threads);
+        Waifu2x* w = new Waifu2x(g->gpuid, g->num_threads);
         if (w->load(param, bin) == 0)
         {
             w->noise = spec.noise;
@@ -686,7 +745,7 @@ static const Processor* get_net(GpuNets* g, const NetSpec& spec, std::string& er
     }
     else if (g_model.engine == ENGINE_REALCUGAN)
     {
-        RealCUGAN* c = new RealCUGAN(g->gpuid, g_opt.tta, g->num_threads);
+        RealCUGAN* c = new RealCUGAN(g->gpuid, g->num_threads);
         if (c->load(param, bin) == 0)
         {
             c->noise = spec.noise;
@@ -701,7 +760,7 @@ static const Processor* get_net(GpuNets* g, const NetSpec& spec, std::string& er
     }
     else
     {
-        RealESRGAN* r = new RealESRGAN(g->gpuid, g_opt.tta, g->num_threads);
+        RealESRGAN* r = new RealESRGAN(g->gpuid, g->num_threads);
         if (r->load(param, bin) == 0)
         {
             r->scale = spec.scale;
@@ -730,6 +789,69 @@ static const Processor* get_net(GpuNets* g, const NetSpec& spec, std::string& er
 
 static std::atomic<int> g_done(0);
 static std::atomic<int> g_failed(0);
+static std::atomic<bool> g_stop(false); // an image still ran out of gpu memory after 3 retries: the rest is not converted
+
+// RAM limit: a share of the RAM that is free when the conversion starts. Every picture reserves what it will hold
+// (decoded input, the network passes, the result and its file) before it is queued; the next pictures wait until
+// enough is free again. One picture alone may always run, a picture bigger than the whole limit fails.
+class RamGate
+{
+public:
+    size_t limit = 0; // bytes, 0 = no limit
+    void acquire(size_t n)
+    {
+        std::unique_lock<std::mutex> lk(m);
+        cv.wait(lk, [&] { return used == 0 || used + n <= limit || g_stop; });
+        used += n;
+    }
+    void release(size_t n)
+    {
+        {
+            std::lock_guard<std::mutex> lk(m);
+            used -= n;
+        }
+        cv.notify_all();
+    }
+
+private:
+    size_t used = 0;
+    std::mutex m;
+    std::condition_variable cv;
+};
+static RamGate g_ram;
+
+// gives a task's reservation back when the worker is done with it (n = 0 when it was handed on)
+struct RamHold
+{
+    size_t n;
+    ~RamHold() { if (n) g_ram.release(n); }
+};
+
+// total and free RAM in MB
+static void ram_info(uint64_t& total_mb, uint64_t& avail_mb)
+{
+    total_mb = avail_mb = 0;
+#if _WIN32
+    MEMORYSTATUSEX ms;
+    ms.dwLength = sizeof(ms);
+    if (GlobalMemoryStatusEx(&ms))
+    {
+        total_mb = ms.ullTotalPhys >> 20;
+        avail_mb = ms.ullAvailPhys >> 20;
+    }
+#else
+    FILE* fp = fopen("/proc/meminfo", "r");
+    if (!fp) return;
+    char line[256];
+    while (fgets(line, sizeof(line), fp))
+    {
+        unsigned long long kb = 0;
+        if (sscanf(line, "MemTotal: %llu kB", &kb) == 1) total_mb = kb >> 10;
+        else if (sscanf(line, "MemAvailable: %llu kB", &kb) == 1) avail_mb = kb >> 10;
+    }
+    fclose(fp);
+#endif
+}
 static int g_total = 0;
 
 static void report_done()
@@ -753,10 +875,31 @@ static BlockingQueue<Task>* g_tosave = 0;
 
 // ============================================================================ threads
 
+// bytes a picture holds while it is converted: the decoded input (every frame of an animation), input and output
+// of the biggest network pass, the resized result and its encoded file
+static size_t task_ram_bytes(const Task& t)
+{
+    const Plan plan = make_plan(g_opt, t.image.w, t.image.h, t.info.is_jpeg);
+    const size_t c = (size_t)std::max(1, t.image.c);
+    size_t w = (size_t)t.image.w, h = (size_t)t.image.h;
+    size_t maxpass = w * h * c;
+    for (size_t i = 0; i < plan.nets.size(); i++)
+    {
+        w *= (size_t)plan.nets[i].scale;
+        h *= (size_t)plan.nets[i].scale;
+        maxpass = std::max(maxpass, w * h * c);
+    }
+    const size_t out = (size_t)plan.outw * (size_t)plan.outh * c;
+    size_t in = (size_t)t.image.w * (size_t)t.image.h * c;
+    if (t.anim) in *= std::max<size_t>(1, t.anim->frames.size());
+    return in + 2 * maxpass + 2 * out;
+}
+
 static void load_worker(const std::vector<path_t>* inputs, const std::vector<path_t>* outputs, std::atomic<int>* next)
 {
     for (;;)
     {
+        if (g_stop) break;
         const int i = (*next)++;
         if (i >= (int)inputs->size()) break;
         Task t;
@@ -824,6 +967,19 @@ static void load_worker(const std::vector<path_t>* inputs, const std::vector<pat
             report_fail("decode", t.inpath, t.outpath, err);
             continue;
         }
+        // RAM limit: reserve what the picture will hold, wait while the pictures in progress use too much
+        if (g_ram.limit)
+        {
+            const size_t need = task_ram_bytes(t);
+            if (need > g_ram.limit)
+            {
+                report_fail("process", t.inpath, t.outpath, "the image needs " + std::to_string(need >> 20) + " MB of RAM, more than the limit of " + std::to_string(g_ram.limit >> 20) + " MB");
+                continue;
+            }
+            g_ram.acquire(need);
+            t.ram = need;
+            if (g_stop) { g_ram.release(need); break; }
+        }
         g_toproc->put(std::move(t));
     }
 }
@@ -839,12 +995,33 @@ static int run_net(const Processor* net, int scale, const Image8& in, Image8& ou
     return net->process(inimage, outimage);
 }
 
+// one network pass; failed gpu allocations (out of memory / over the limit) count as an error:
+// upstream skipped those tiles and saved a partly empty image
+static int run_net_checked(GpuNets* g, const Processor* net, int scale, const Image8& in, Image8& out)
+{
+    ncnn::take_vk_alloc_failures();
+    int rr;
+    if (g_model.engine == ENGINE_REALESRGAN && g->gpuid != -1)
+    {
+        // x4plus keeps every layer of a tile in gpu memory: several images at once ran out of vram
+        std::lock_guard<std::mutex> lk(g->run_lock);
+        rr = run_net(net, scale, in, out);
+    }
+    else
+        rr = run_net(net, scale, in, out);
+    if (g_model.engine == ENGINE_REALCUGAN && realcugan_take_error() != 0) rr = -1;
+    if (ncnn::take_vk_alloc_failures() != 0) rr = -1;
+    return rr;
+}
+
 static void proc_worker(GpuNets* g)
 {
     for (;;)
     {
         Task t = g_toproc->get();
         if (t.id == -233) break;
+        RamHold hold{t.ram}; // given back unless the picture goes on to be saved
+        if (g_stop) continue; // stopped: the queued images are dropped
 
         Plan plan = make_plan(g_opt, t.image.w, t.image.h, t.info.is_jpeg);
         if (!plan.error.empty())
@@ -877,15 +1054,61 @@ static void proc_worker(GpuNets* g)
                 if (!net) return false;
                 Image8 next;
                 int rr;
-                if (g_model.engine == ENGINE_REALESRGAN && g->gpuid != -1)
+                Processor* pn = const_cast<Processor*>(net);
+                if (g->single)
                 {
-                    // x4plus keeps every layer of a tile in gpu memory: several images at once ran out of vram
-                    std::lock_guard<std::mutex> lk(g->run_lock);
-                    rr = run_net(net, plan.nets[s].scale, cur, next);
+                    // this gpu ran out of memory before: one picture at a time, with the split size that worked
+                    std::unique_lock<std::shared_mutex> ul(g->rw);
+                    const int t0 = pn->get_tile(), cap = g->tile_cap;
+                    if (cap > 0 && t0 > cap) pn->set_tile(cap);
+                    rr = run_net_checked(g, net, plan.nets[s].scale, cur, next);
+                    pn->set_tile(t0);
                 }
                 else
-                    rr = run_net(net, plan.nets[s].scale, cur, next);
-                if (g_model.engine == ENGINE_REALCUGAN && realcugan_take_error() != 0) rr = -1;
+                {
+                    std::shared_lock<std::shared_mutex> sl(g->rw);
+                    rr = run_net_checked(g, net, plan.nets[s].scale, cur, next);
+                }
+                if (rr != 0 && g->gpuid != -1 && !g_stop)
+                {
+                    // out of gpu memory: from now on 1 thread on this gpu (the others wait, their memory is free) and
+                    // up to 3 retries: first the automatic split size for the whole memory limit (as one thread now has
+                    // it all), at most half of the one that failed and no bigger than the picture; then half of that.
+                    // nothing was saved for the failed try
+                    g->single = true;
+                    int tile = pn->get_tile();
+                    if (g->tile_cap > 0) tile = std::min(tile, (int)g->tile_cap);
+                    const int failed = tile;
+                    for (int k = 1; k <= 3 && rr != 0 && !g_stop; k++)
+                    {
+                        std::unique_lock<std::shared_mutex> ul(g->rw);
+                        const int t0 = pn->get_tile();
+                        if (k == 1)
+                        {
+                            const int picture = std::max(32, (std::max(cur.w, cur.h) + 3) / 4 * 4);
+                            tile = std::min(std::min(auto_tilesize_mb(g->heap_total, plan.nets[s].scale), failed / 2), picture);
+                        }
+                        else
+                            tile = tile / 2;
+                        tile = std::max(32, tile);
+                        if (g_opt.progress)
+                            out_line(stdout, "RETRY\t" + P(t.inpath) + "\t" + std::to_string(k) + "\t" + std::to_string(tile));
+                        else
+                            out_line(stderr, P(t.inpath) + ": out of gpu memory, retry " + std::to_string(k) + "/3 with 1 thread and tile size " + std::to_string(tile));
+                        pn->set_tile(tile);
+                        next = Image8();
+                        rr = run_net_checked(g, net, plan.nets[s].scale, cur, next);
+                        pn->set_tile(t0);
+                        if (rr == 0) g->tile_cap = tile; // the next pictures on this gpu use it too
+                    }
+                    if (rr != 0 && !g_stop.exchange(true))
+                    {
+                        if (g_opt.progress)
+                            out_line(stdout, "STOP\t" + P(t.inpath));
+                        else
+                            out_line(stderr, P(t.inpath) + ": still out of gpu memory after 3 retries, conversion stopped");
+                    }
+                }
                 if (rr != 0) { err = "GPU error (probably out of GPU memory) - use a smaller Split size or fewer Thread(s)"; return false; }
                 cur = std::move(next);
             }
@@ -918,6 +1141,7 @@ static void proc_worker(GpuNets* g)
                             t.inpath, t.outpath, err);
                 continue;
             }
+            hold.n = 0;
             g_tosave->put(std::move(t));
             continue;
         }
@@ -931,6 +1155,7 @@ static void proc_worker(GpuNets* g)
 
         image_resize_to(cur, plan.outw, plan.outh, t.out);
         image_alpha_clean(t.out);
+        hold.n = 0;
         g_tosave->put(std::move(t));
     }
 }
@@ -950,6 +1175,7 @@ static void save_worker()
     {
         Task t = g_tosave->get();
         if (t.id == -233) break;
+        RamHold hold{t.ram};
 
         const OutputFormatInfo* fi = find_output_format(t.format.c_str());
         OutImage& img = t.out;
@@ -1029,6 +1255,16 @@ static bool read_file_list(const path_t& listpath, std::vector<path_t>& in, std:
 
 // ============================================================================ main
 
+// size of the biggest device local memory heap (the card's vram)
+static uint32_t gpu_total_mb(int device_index)
+{
+    const VkPhysicalDeviceMemoryProperties& mp = ncnn::get_gpu_info(device_index).physicalDeviceMemoryProperties();
+    uint64_t best = 0;
+    for (uint32_t h = 0; h < mp.memoryHeapCount; h++)
+        if (mp.memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) best = std::max<uint64_t>(best, mp.memoryHeaps[h].size);
+    return (uint32_t)(best >> 20);
+}
+
 static int list_gpus()
 {
     ncnn::create_gpu_instance();
@@ -1037,8 +1273,8 @@ static int list_gpus()
     {
         const ncnn::GpuInfo& gi = ncnn::get_gpu_info(i);
         const char* type = gi.type() == 0 ? "discrete" : gi.type() == 1 ? "integrated" : gi.type() == 2 ? "virtual" : "cpu";
-        uint32_t heap = ncnn::get_gpu_device(i)->get_heap_budget();
-        out_line(stdout, "GPU\t" + std::to_string(i) + "\t" + gi.device_name() + "\t" + type + "\t" + std::to_string(heap));
+        uint32_t heap = ncnn::get_gpu_device(i)->get_heap_budget(); // free now
+        out_line(stdout, "GPU\t" + std::to_string(i) + "\t" + gi.device_name() + "\t" + type + "\t" + std::to_string(heap) + "\t" + std::to_string(gpu_total_mb(i)));
     }
     out_line(stdout, "CPU\t" + std::to_string(ncnn::get_cpu_count()));
     ncnn::destroy_gpu_instance();
@@ -1258,9 +1494,9 @@ static int run(const std::vector<path_t>& args)
     }
     for (size_t i = 0; i < o.jobs_proc.size(); i++)
     {
-        if (o.jobs_proc[i] < 1)
+        if (o.jobs_proc[i] < 1 || o.jobs_proc[i] > 32)
         {
-            fprintf(stderr, "invalid jobs_proc thread count argument\n");
+            fprintf(stderr, "invalid jobs_proc thread count argument (1-32)\n");
             ncnn::destroy_gpu_instance();
             return -1;
         }
@@ -1307,10 +1543,19 @@ static int run(const std::vector<path_t>& args)
         gpus[i].num_threads = o.gpuid[i] == -1 ? o.jobs_proc[i] : 1;
         if (o.gpuid[i] != -1)
         {
-            uint32_t heap_budget = ncnn::get_gpu_device(o.gpuid[i])->get_heap_budget();
+            // the memory limit: a share of the memory that is free now (not of the whole card), like Photoshop
+            const uint32_t total_mb = gpu_total_mb(o.gpuid[i]);
+            const uint32_t avail_mb = ncnn::get_gpu_device(o.gpuid[i])->get_heap_budget();
+            const uint32_t limit_mb = (uint32_t)((uint64_t)avail_mb * o.vram_percent / 100);
+            ncnn::set_vram_limit(o.gpuid[i], (size_t)limit_mb << 20);
+            uint32_t heap_budget = limit_mb;
             if (g_total > 1 && jobs_proc_per_gpu[o.gpuid[i]] > 0) heap_budget /= jobs_proc_per_gpu[o.gpuid[i]];
-            gpus[i].heap_total = ncnn::get_gpu_device(o.gpuid[i])->get_heap_budget();
+            gpus[i].heap_total = limit_mb;
             gpus[i].heap_budget = heap_budget;
+            if (o.progress)
+                out_line(stdout, "VRAM\t" + std::to_string(o.gpuid[i]) + "\t" + std::to_string(total_mb) + "\t" + std::to_string(avail_mb) + "\t" + std::to_string(o.vram_percent) + "\t" + std::to_string(limit_mb));
+            else if (o.verbose)
+                out_line(stderr, "gpu " + std::to_string(o.gpuid[i]) + ": " + std::to_string(total_mb) + " MB total, " + std::to_string(avail_mb) + " MB free, limit " + std::to_string(o.vram_percent) + "% = " + std::to_string(limit_mb) + " MB");
         }
     }
 
@@ -1336,6 +1581,17 @@ static int run(const std::vector<path_t>& args)
                 out_line(stdout, "DEVICE\t" + std::to_string(o.gpuid[i]) + "\t" + name + " (tile " + tile + ")");
             else if (o.verbose)
                 out_line(stderr, "using " + name + ", tile size " + tile);
+        }
+        {
+            // the RAM limit: a share of the RAM that is free now (not of all RAM)
+            uint64_t total_mb = 0, avail_mb = 0;
+            ram_info(total_mb, avail_mb);
+            const uint64_t limit_mb = avail_mb * o.ram_percent / 100;
+            g_ram.limit = (size_t)(limit_mb << 20);
+            if (o.progress)
+                out_line(stdout, "RAM\t" + std::to_string(total_mb) + "\t" + std::to_string(avail_mb) + "\t" + std::to_string(o.ram_percent) + "\t" + std::to_string(limit_mb));
+            else if (o.verbose)
+                out_line(stderr, "ram: " + std::to_string(total_mb) + " MB total, " + std::to_string(avail_mb) + " MB free, limit " + std::to_string(o.ram_percent) + "% = " + std::to_string(limit_mb) + " MB");
         }
         if (o.progress) out_line(stdout, "READY");
 

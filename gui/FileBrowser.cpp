@@ -1,5 +1,6 @@
 #include "FileBrowser.h"
 #include "Util.h"
+#include "Tooltip.h"
 
 #include <algorithm>
 #include <stdlib.h>
@@ -461,7 +462,7 @@ static bool RefreshButton(const char* id, float sz)
 
 static void Tip(const std::string& text)
 {
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled | ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("%s", text.c_str());
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled | ImGuiHoveredFlags_DelayShort)) TooltipText("%s", text.c_str());
 }
 
 // a width that fits a label in every language (at least minW)
@@ -549,7 +550,7 @@ void FileBrowser::DrawPlaces(float s, float h)
             }
             label += "...";
         }
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s\n%s", p.label.c_str(), NativeSeparators(p.path).c_str());
+        if (ImGui::IsItemHovered()) TooltipText("%s\n%s", p.label.c_str(), NativeSeparators(p.path).c_str());
         ImGui::GetWindowDrawList()->AddText(ImVec2(pos.x + isz + 12 * s, pos.y + (lh - th) * 0.5f), ImGui::GetColorU32(ImGuiCol_Text), label.c_str());
         ImGui::PopID();
     }

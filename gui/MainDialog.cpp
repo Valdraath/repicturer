@@ -2,6 +2,7 @@
 
 #include "MainDialog.h"
 #include "ImageProbe.h"
+#include "Tooltip.h"
 #include "../common/formats.h"
 
 #include <algorithm>
@@ -90,7 +91,7 @@ static std::string ExtListDisplay()
 }
 // explorer settings an earlier version wrote: accepted by the setting.ini check, removed on the next save
 static const char* const LegacyBrowserKeys[] = {"LastBrowserBookmarks", "LastBrowserPinned", "LastBrowserView",
-    "LastBrowserFoldersFirst", "LastBrowserPreview", "LastBrowserAutoOpen", "LastBrowserColumns", "LastInputFileExt", "LastBrowserHidden", "LastOutputDepth"};
+    "LastBrowserFoldersFirst", "LastBrowserPreview", "LastBrowserAutoOpen", "LastBrowserColumns", "LastInputFileExt", "LastBrowserHidden", "LastOutputDepth", "LastUseTTA", "LastGpuIds", "LastTileSizes", "LastProcThreads", "LastLoadThreads", "LastSaveThreads", "LastIsArgStartAuto", "LastIsArgStartSuccessFinish", "LastVerboseLog", "LastAutoMode"};
 
 // ---- value rules of setting.ini (CheckSettingFile, SaveIni)
 
@@ -104,27 +105,6 @@ static bool IsIntIn(const std::string& s, long lo, long hi)
         if (s[k] < '0' || s[k] > '9') return false;
     const long v = strtol(s.c_str(), nullptr, 10);
     return v >= lo && v <= hi;
-}
-
-// "" or "a,b,c" with every number in [lo, hi] (gpu ids, threads per gpu)
-static bool IsValidIntList(const std::string& s, long lo, long hi)
-{
-    if (s.empty()) return true;
-    for (const auto& p : Split(s, ',', false))
-        if (!IsIntIn(Trim(p), lo, hi)) return false;
-    return true;
-}
-
-// "" or "a,b" split sizes: 0 (auto) or 32 .. 65536
-static bool IsValidTileList(const std::string& s)
-{
-    if (s.empty()) return true;
-    for (const auto& p : Split(s, ',', false))
-    {
-        const std::string t = Trim(p);
-        if (!(t == "0" || IsIntIn(t, 32, 65536))) return false;
-    }
-    return true;
 }
 
 // ---------------------------------------------------------------- model capabilities
@@ -210,10 +190,10 @@ namespace
 // ============================================================================ construction
 
 DialogEvent::DialogEvent() : mode(eModeNoiseScale), modeStr("noise_scale"), noise_level(0), scale_ratio(1.0), scale_width(0), scale_height(0),
-    process("gpu"), outputExt(".png"), inputFileExt(DefaultInputExtList), use_tta(false), output_quality(-1),
-    crop_size(0), batch_size(2), gpu_no(-1), isLastError(false), scaleType(eScaleTypeEnd), modelType(0), tAutoMode("none"),
-    isArgStartAuto(true), isArgStartSuccessFinish(true), isOutputNoOverwrite(false), isNotSaveParam(false), isSetInitCrop(false),
-    isCommandLineStart(false), loadThreads(1), saveThreads(2), verboseLog(false), syncgap(3), gpuState(0), cancelFlag(false)
+    process("gpu"), outputExt(".png"), inputFileExt(DefaultInputExtList), output_quality(-1),
+    crop_size(0), batch_size(2), gpu_no(-1), isLastError(false), scaleType(eScaleTypeEnd), modelType(0),
+    isOutputNoOverwrite(false), useCustomDirs(false), isSetInitCrop(false),
+    syncgap(3), vramPercent(60), ramPercent(60), gpuState(0), cancelFlag(false)
 {
     // the input types are fixed: ready before anything is dropped, typed or browsed
     for (auto ext : Split(inputFileExt, ':', true))
@@ -363,7 +343,7 @@ void DialogEvent::StartGpuDetect(bool showResult)
                 {
                     auto c = Split(line, '\t', false);
                     if (c.size() >= 5)
-                        found.push_back({atoi(c[1].c_str()), c[2], c[3], atoi(c[4].c_str())});
+                        found.push_back({atoi(c[1].c_str()), c[2], c[3], atoi(c[4].c_str()), c.size() >= 6 ? atoi(c[5].c_str()) : 0});
                 }
                 else if (stream == 2 && !line.empty())
                     serr += line + "\n";
@@ -426,8 +406,6 @@ std::string DialogEvent::AddName() const
         addstr += "(Detail" + std::to_string(noise_level) + ")";
     else if (mode == eModeNoise || mode == eModeNoiseScale || mode == eModeAutoScale)
         addstr += "(Level" + std::to_string(noise_level) + ")";
-    if (use_tta)
-        addstr += "(tta)";
 
     if (mode == eModeScale || mode == eModeNoiseScale || mode == eModeAutoScale)
     {
@@ -579,17 +557,16 @@ bool DialogEvent::SyncMember(const bool NotSyncCropSize, const bool silent)
 
     {
         long l;
-        if (!ParseInt(Trim(comboBatch), l) || l <= 0)
+        if (!ParseInt(Trim(comboBatch), l) || l <= 0 || l > 32)
         {
             batch_size = 2;
             ret = false;
-            if (!silent) MessageBox(L2("MessageProcThreadsCheckError", "Thread(s) must be an integer of 1 or more"), errTitle, IconError);
+            if (!silent) MessageBox(L2("MessageProcThreadsCheckError", "Thread(s) must be an integer from 1 to 32"), errTitle, IconError);
         }
         else
             batch_size = (int)l;
     }
 
-    use_tta = checkTTA;
     return ret;
 }
 
@@ -691,7 +668,6 @@ void DialogEvent::Waifu2xTime()
 void DialogEvent::SaveIni(const bool isSyncMember)
 {
     if (isSyncMember) SyncMember(true, true);
-    if (isNotSaveParam) return;
 
     IniFile ini;
     ini.Load(SettingPath());
@@ -723,25 +699,18 @@ void DialogEvent::SaveIni(const bool isSyncMember)
     ini.Set(S, "LastNoiseLevel", std::to_string(noise_level));
     ini.Set(S, "LastProcess", process);
     ini.Set(S, "LastModelType", modelType >= 0 && modelType < (int)models.size() ? models[modelType].type : DefaultModelType);
-    ini.Set(S, "LastUseTTA", use_tta ? "1" : "0");
     ini.Set(S, "LastDeviceNo", std::to_string(gpu_no >= -1 && gpu_no <= 63 ? gpu_no : -1));
     ini.Set(S, "LastOutputQuality", tQuality);
     ini.Set(S, "LastLanguage", LangName);
-    ini.Set(S, "LastAutoMode", tAutoMode);
-    ini.Set(S, "LastIsArgStartAuto", isArgStartAuto ? "1" : "0");
-    ini.Set(S, "LastIsArgStartSuccessFinish", isArgStartSuccessFinish ? "1" : "0");
     ini.Set(S, "LastIsOutputNoOverwrite", isOutputNoOverwrite ? "1" : "0");
     ini.Set(S, "LastInputDirFix", tInputDirFix);
     ini.Set(S, "LastOutputDirFix", tOutputDirFix);
+    ini.Set(S, "LastUseCustomDirs", useCustomDirs ? "1" : "0");
     ini.Set(S, "LastBatchSize", std::to_string(batch_size >= 1 && batch_size <= 1024 ? batch_size : 2));
     ini.Set(S, "LastCropSize", tCrop);
-    ini.Set(S, "LastGpuIds", IsValidIntList(gpuIdsMulti, -1, 63) ? gpuIdsMulti : "");
-    ini.Set(S, "LastTileSizes", IsValidTileList(tileMulti) ? tileMulti : "");
-    ini.Set(S, "LastProcThreads", IsValidIntList(procMulti, 1, 1024) ? procMulti : "");
-    ini.Set(S, "LastLoadThreads", std::to_string(loadThreads));
-    ini.Set(S, "LastSaveThreads", std::to_string(saveThreads));
-    ini.Set(S, "LastVerboseLog", verboseLog ? "1" : "0");
     ini.Set(S, "LastSyncGap", std::to_string(syncgap));
+    ini.Set(S, "LastVramPercent", std::to_string(vramPercent));
+    ini.Set(S, "LastRamPercent", std::to_string(ramPercent));
     {
         const FileBrowser::Prefs& bp = fileBrowser.prefs;
         ini.Set(S, "LastBrowserSort", std::to_string(bp.sortColumn));
@@ -974,6 +943,12 @@ void DialogEvent::ProcessWaifu2x(Job job)
                     else if (c[0] == "PLAN" && c.size() >= 3) { e.type = EvPlan; e.a = c[1]; e.b = c[2]; }
                     else if (c[0] == "ANIM" && c.size() >= 4) { e.type = EvAnim; e.a = c[1]; e.b = c[2]; e.c = c[3]; }
                     else if (c[0] == "FRAME" && c.size() >= 4) { e.type = EvFrame; e.a = c[1]; e.n = atoi(c[2].c_str()); e.m = atoi(c[3].c_str()); }
+                    else if ((c[0] == "RAM" && c.size() >= 5) || (c[0] == "VRAM" && c.size() >= 6) || (c[0] == "TILEFIT" && c.size() >= 4) || (c[0] == "RETRY" && c.size() >= 4) || (c[0] == "STOP" && c.size() >= 2))
+                    {
+                        // gpu memory: the limit, a split size lowered to fit, a retry, the conversion stopped
+                        e.type = EvMemory;
+                        e.a = line;
+                    }
                     else { e.type = EvLog; e.a = line; e.n = 1; }
                 }
                 else
@@ -1063,6 +1038,24 @@ void DialogEvent::HandleEvents()
             frameNow = e.n;
             frameTotal = e.m;
             break;
+        case EvMemory:
+        {
+            const auto c = Split(e.a, '\t', false);
+            if (c[0] == "RAM")
+                AddLogMessage(Format(T("RAM: %s MB total, %s MB free, memory limit %s %% = %s MB").c_str(), c[1].c_str(), c[2].c_str(), c[3].c_str(), c[4].c_str()));
+            else if (c[0] == "VRAM")
+                AddLogMessage(Format(T("GPU %s: %s MB VRAM, %s MB free, memory limit %s %% = %s MB").c_str(), c[1].c_str(), c[2].c_str(), c[3].c_str(), c[4].c_str(), c[5].c_str()));
+            else if (c[0] == "TILEFIT")
+                AddLogMessage(Format(T("Split size %s needs more GPU memory than the limit allows: %s is used instead").c_str(), c[2].c_str(), c[3].c_str()));
+            else if (c[0] == "RETRY")
+                AddLogMessage(Format(T("%s: out of GPU memory, retry %s of 3 with 1 thread and Split size %s").c_str(), FileName(c[1]).c_str(), c[2].c_str(), c[3].c_str()));
+            else
+            {
+                AddLogMessage(Format(T("%s still ran out of GPU memory after 3 retries. The conversion was stopped: lower the Split size or Thread(s), or raise the GPU memory limit in Preferences.").c_str(), FileName(c[1]).c_str()));
+                isLastError = true;
+            }
+            break;
+        }
         case EvPlan:
             // the networks that really ran: shown for the first image, for every image with the verbose log
             if (true) // every file is listed
@@ -1079,7 +1072,7 @@ void DialogEvent::HandleEvents()
                 stderrTail.push_back(e.a);
                 if (stderrTail.size() > 30) stderrTail.erase(stderrTail.begin());
             }
-            if ((verboseLog || e.n == 0) && !e.a.empty()) AddLogMessage(e.a); // n 0 = always shown
+            if (e.n == 0 && !e.a.empty()) AddLogMessage(e.a); // n 0 = always shown (the converter's own output stays out of the log)
             break;
         case EvFailCreateDir:
             MessageBox(Format(L("MessageCreateOutDirError").c_str(), e.a.c_str()), L("MessageTitleError"), IconError);
@@ -1098,7 +1091,7 @@ void DialogEvent::HandleEvents()
                 // the converter refused to run (bad option, no model, no device ...): show what it said
                 isLastError = true;
                 for (const auto& l : stderrTail)
-                    if (verboseLog == false) AddLogMessage(TranslateDetail(l));
+                    AddLogMessage(TranslateDetail(l));
             }
             else if (e.n == 1)
                 isLastError = true;
@@ -1125,7 +1118,11 @@ void DialogEvent::HandleEvents()
         else
         {
             std::string list;
-            for (const auto& g : gpus) list += Format("GPU %d: %s (%s, %d MB)\n", g.index, g.name.c_str(), T(g.type.c_str()).c_str(), g.heapMB);
+            for (const auto& g : gpus)
+            {
+                const std::string mem = g.totalMB > 0 ? Format(T("%d MB VRAM, %d MB free").c_str(), g.totalMB, g.heapMB) : Format("%d MB", g.heapMB);
+                list += Format("GPU %d: %s (%s, %s)\n", g.index, g.name.c_str(), T(g.type.c_str()).c_str(), mem.c_str());
+            }
             MessageBox(Format(L2("MessageGpuFound", "Vulkan can be used\n\n%s").c_str(), list.c_str()), L("MessageTitleResult"), IconInfo);
         }
     }
@@ -1193,30 +1190,6 @@ void DialogEvent::Exec()
         }
     }
 
-    // validate ncnn advanced settings
-    auto validList = [](const std::string& s, int minv) {
-        if (Trim(s).empty()) return true;
-        for (const auto& t : Split(Trim(s), ',', false))
-        {
-            long v;
-            if (!ParseInt(Trim(t), v) || v < minv) return false;
-        }
-        return true;
-    };
-    if (!validList(gpuIdsMulti, -1))
-    {
-        MessageBox(L2("MessageMultiGpuCheckError", "GPU ids must be a comma separated list such as 0,1 (-1 = CPU)"), errTitle, IconError);
-        return;
-    }
-    const size_t ngpu = Trim(gpuIdsMulti).empty() ? 1 : Split(Trim(gpuIdsMulti), ',', false).size();
-    if (!validList(tileMulti, 0) || !validList(procMulti, 1) ||
-        (!Trim(tileMulti).empty() && Split(Trim(tileMulti), ',', false).size() != ngpu) ||
-        (!Trim(procMulti).empty() && Split(Trim(procMulti), ',', false).size() != ngpu) || loadThreads < 1 || saveThreads < 1)
-    {
-        MessageBox(L2("MessageThreadsCheckError", "Split sizes / thread counts per GPU must be integers, one per GPU id"), errTitle, IconError);
-        return;
-    }
-
     SaveIni(true);
 
     Job job;
@@ -1252,35 +1225,19 @@ void DialogEvent::Exec()
     }
     a.push_back("-m"); a.push_back(model_dir);
     if (models[modelType].engine == EngineRealCUGAN) { a.push_back("-c"); a.push_back(std::to_string(syncgap)); }
+    a.push_back("--vram-percent"); a.push_back(std::to_string(vramPercent));
+    a.push_back("--ram-percent"); a.push_back(std::to_string(ramPercent));
 
-    std::string gpuArg, tileArg, procArg;
-    if (!Trim(gpuIdsMulti).empty())
-    {
-        gpuArg = Trim(gpuIdsMulti);
-        tileArg = Trim(tileMulti);
-        procArg = Trim(procMulti);
-        if (tileArg.empty()) { for (size_t i = 0; i < ngpu; i++) tileArg += (i ? "," : "") + std::to_string(crop_size); }
-        if (procArg.empty() || models[modelType].heavy)
-        {
-            // heavy models: one image at a time on every GPU
-            procArg.clear();
-            for (size_t i = 0; i < ngpu; i++) procArg += (i ? "," : "") + std::to_string(models[modelType].heavy ? 1 : batch_size);
-        }
-    }
-    else
-    {
-        if (process == "cpu") gpuArg = "-1";
-        else if (gpu_no >= 0) gpuArg = std::to_string(gpu_no);
-        tileArg = std::to_string(crop_size);
-        procArg = std::to_string(models[modelType].heavy ? 1 : batch_size); // heavy models: one image at a time
-    }
+    std::string gpuArg;
+    if (process == "cpu") gpuArg = "-1";
+    else if (gpu_no >= 0) gpuArg = std::to_string(gpu_no);
+    const std::string tileArg = std::to_string(crop_size);
+    const std::string procArg = std::to_string(models[modelType].heavy ? 1 : batch_size); // heavy models: one image at a time
     if (!gpuArg.empty()) { a.push_back("-g"); a.push_back(gpuArg); }
     a.push_back("-t"); a.push_back(tileArg);
     a.push_back("-j"); a.push_back(std::to_string(loadThreads) + ":" + procArg + ":" + std::to_string(saveThreads));
-    if (use_tta) a.push_back("-x");
     if (output_quality >= 0) { a.push_back("-q"); a.push_back(std::to_string(output_quality)); }
     if (isOutputNoOverwrite) a.push_back("-k");
-    if (verboseLog) a.push_back("-v");
 
     progressNow = 0;
     progressMax = 0;
@@ -1303,7 +1260,6 @@ void DialogEvent::WaitThreadExit()
 {
     if (processThread.joinable()) processThread.join();
 
-    bool endFlag = false;
     if (!isLastError)
     {
         if (!cancelFlag)
@@ -1311,7 +1267,6 @@ void DialogEvent::WaitThreadExit()
             AddLogMessage(Format(L2("MessageSummary", "%d of %d files converted (%d failed, %d skipped)").c_str(),
                 std::max(0, progressNow - failCount - skipCount), progressMax, failCount, skipCount));
             AddLogMessage(L("MessageTransSuccess"));
-            if (isCommandLineStart && isArgStartSuccessFinish) endFlag = true;
         }
         Waifu2xTime();
 #ifdef _WIN32
@@ -1324,9 +1279,7 @@ void DialogEvent::WaitThreadExit()
         MessageBox(L("MessageErrorHappen"), L("MessageTitleError"), IconError);
     }
 
-    isCommandLineStart = false;
-
-    if (endFlag || closeAfterProcess) closeRequested = true;
+    if (closeAfterProcess) closeRequested = true;
 }
 
 void DialogEvent::Cancel()
@@ -1482,22 +1435,17 @@ void DialogEvent::OnDrop(const std::vector<std::string>& paths, float mx, float 
         OnSetOutputFilePath(paths[0]);
         return;
     }
+    // one input: 1 image, or 1 folder (with images and / or sub folders of images). Several dropped items:
+    // the first one, in the order the file manager hands them over (Explorer / Dolphin: the order of the selection)
+    const std::vector<std::string> first(1, paths[0]);
     {
-        const std::string err = CheckInputPaths(paths);
+        const std::string err = CheckInputPaths(first);
         if (!err.empty()) { MessageBox(err, L("MessageTitleError"), IconWarning); return; }
     }
 
-    if (paths.size() == 1)
-        OnSetInputFilePath(paths[0]);
-    else
-    {
-        input_str.clear();
-        input_str_multi = paths;
-        OnSetInputFilePath();
-    }
+    OnSetInputFilePath(paths[0]);
 
-    if (tAutoMode == "one" || (tAutoMode == "multi" && (!input_str_multi.empty() || IsDirectory(paths[0]))))
-        Exec();
+
 }
 
 // ---- input / output rules (explorer, drag and drop, typed paths and Start use the same ones). "" = fine
@@ -1601,7 +1549,7 @@ std::string DialogEvent::CheckOutputFolder(const std::string& dir) const
 
 void DialogEvent::StartPicker(int target, bool folder, const std::string& title, const std::string& initialDir)
 {
-    if (fileBrowser.IsOpen()) return; // one explorer at a time (input, output or an App Setting folder)
+    if (fileBrowser.IsOpen()) return; // one explorer at a time (input, output or an Preferences folder)
     fileBrowserTarget = target;
     if (target == 1) fileBrowser.validate = [this](const std::vector<std::string>& p) { return CheckInputPaths(p); };
     else if (target == 2) fileBrowser.validate = [this](const std::vector<std::string>& p) { return p.empty() ? std::string() : CheckOutputFolder(p[0]); };
@@ -1635,7 +1583,7 @@ void DialogEvent::InputRef()
     SyncMember(false, true);
     PruneRememberedFolders();
     // first one that still exists: fixed folder, folder of the input, last folder used, else the user folder
-    const std::string init = FirstExistingFolder({tInputDirFix, IsDirectory(input_str) ? input_str : ParentPath(input_str), lastBrowseIn});
+    const std::string init = FirstExistingFolder({useCustomDirs ? tInputDirFix : std::string(), IsDirectory(input_str) ? input_str : ParentPath(input_str), lastBrowseIn});
     StartPicker(1, false, L("MessageTitleInputDialog"), init);
 }
 
@@ -1644,7 +1592,7 @@ void DialogEvent::OutputRef()
     SyncMember(false, true);
     PruneRememberedFolders();
     // first one that still exists: fixed folder, output folder, folder of the output, last folder used, else the user folder
-    const std::string init = FirstExistingFolder({tOutputDirFix, output_dir, output_str.empty() ? std::string() : ParentPath(output_str), lastBrowseOut});
+    const std::string init = FirstExistingFolder({useCustomDirs ? tOutputDirFix : std::string(), output_dir, output_str.empty() ? std::string() : ParentPath(output_str), lastBrowseOut});
     StartPicker(2, true, L2("MessageTitleOutputDialog", "Please select the output folder"), init);
 }
 
@@ -1676,23 +1624,17 @@ void DialogEvent::ClearOutputDir()
 
 void DialogEvent::AppSetting()
 {
-    app.autoMode = tAutoMode == "one" ? 1 : tAutoMode == "multi" ? 2 : 0;
-    app.processor = process == "cpu" ? 1 : 0;
-    app.argStartAuto = isArgStartAuto;
-    app.argStartFinish = isArgStartSuccessFinish;
     app.noOverwrite = isOutputNoOverwrite;
     CopyStr(app.inputDirFix, sizeof(app.inputDirFix), tInputDirFix);
     CopyStr(app.outputDirFix, sizeof(app.outputDirFix), tOutputDirFix);
-    app.gpuCombo = 0;
-    for (size_t i = 0; i < gpus.size(); i++)
-        if (gpus[i].index == gpu_no) app.gpuCombo = (int)i + 1;
-    CopyStr(app.gpuIds, sizeof(app.gpuIds), gpuIdsMulti);
-    CopyStr(app.tiles, sizeof(app.tiles), tileMulti);
-    CopyStr(app.procs, sizeof(app.procs), procMulti);
-    app.loadThreads = loadThreads;
-    app.saveThreads = saveThreads;
-    app.verbose = verboseLog;
+    app.customDirs = useCustomDirs;
     app.syncgap = syncgap;
+    app.vramPercent = vramPercent;
+    app.ramPercent = ramPercent;
+    snprintf(app.vramText, sizeof(app.vramText), "%d", vramPercent);
+    snprintf(app.ramText, sizeof(app.ramText), "%d", ramPercent);
+    app.vramLast = app.vramText;
+    app.ramLast = app.ramText;
     appSettingOpen = true;
     if (gpuState == 0) StartGpuDetect(false);
 }
@@ -1746,28 +1688,21 @@ bool DialogEvent::CheckSettingFile(bool& missing) const
             for (const auto& m : models) if (m.type == v) return true;
             return false;
         }},
-        {"LastUseTTA", bool01},
         {"LastDeviceNo", [](const std::string& v) { return IsIntIn(v, -1, 63); }},
         {"LastOutputQuality", [](const std::string&) { return true; }}, // checked with the format below
         {"LastLanguage", [this](const std::string& v) {
             for (const auto& l : lang.GetLangList()) if (l.LangName == v) return true;
             return false;
         }},
-        {"LastAutoMode", [&](const std::string& v) { return oneOf(v, {"none", "one", "multi"}); }},
-        {"LastIsArgStartAuto", bool01},
-        {"LastIsArgStartSuccessFinish", bool01},
         {"LastIsOutputNoOverwrite", bool01},
         {"LastInputDirFix", [](const std::string&) { return true; }},  // any folder
         {"LastOutputDirFix", [](const std::string&) { return true; }},
+        {"LastUseCustomDirs", bool01},
         {"LastBatchSize", [](const std::string& v) { return IsIntIn(v, 1, 1024); }},
         {"LastCropSize", [](const std::string& v) { return v == "0" || IsIntIn(v, 32, 65536); }},
-        {"LastGpuIds", [](const std::string& v) { return IsValidIntList(v, -1, 63); }},
-        {"LastTileSizes", [](const std::string& v) { return IsValidTileList(v); }},
-        {"LastProcThreads", [](const std::string& v) { return IsValidIntList(v, 1, 1024); }},
-        {"LastLoadThreads", [](const std::string& v) { return IsIntIn(v, 1, 64); }},
-        {"LastSaveThreads", [](const std::string& v) { return IsIntIn(v, 1, 64); }},
-        {"LastVerboseLog", bool01},
         {"LastSyncGap", [](const std::string& v) { return IsIntIn(v, 0, 3); }},
+        {"LastVramPercent", [](const std::string& v) { return IsIntIn(v, 10, 80); }},
+        {"LastRamPercent", [](const std::string& v) { return IsIntIn(v, 10, 80); }},
         {"LastBrowserSort", [](const std::string& v) { return IsIntIn(v, 0, 1); }},
         {"LastBrowserSortDesc", bool01},
         {"LastBrowserFolderIn", [](const std::string&) { return true; }},
@@ -1883,28 +1818,21 @@ void DialogEvent::Create(int argc, char** argv)
     noise_level = ini.GetInt(S, "LastNoiseLevel", 0);
     std::string tprocess = ini.Get(S, "LastProcess", "gpu");
     std::string tModelType = ini.Get(S, "LastModelType", DefaultModelType);
-    use_tta = ini.GetInt(S, "LastUseTTA", 0) != 0;
     gpu_no = ini.GetInt(S, "LastDeviceNo", -1);
     output_quality = -1;
     {
         const int num = ini.GetInt(S, "LastOutputQuality", -100);
         if (num != -100) output_quality = num;
     }
-    tAutoMode = ini.Get(S, "LastAutoMode", "none");
-    isArgStartAuto = ini.GetInt(S, "LastIsArgStartAuto", 1) != 0;
-    isArgStartSuccessFinish = ini.GetInt(S, "LastIsArgStartSuccessFinish", 1) != 0;
     isOutputNoOverwrite = ini.GetInt(S, "LastIsOutputNoOverwrite", 0) != 0;
     tInputDirFix = ini.Get(S, "LastInputDirFix", "");
     tOutputDirFix = ini.Get(S, "LastOutputDirFix", "");
+    useCustomDirs = ini.GetInt(S, "LastUseCustomDirs", 0) != 0;
     batch_size = ini.GetInt(S, "LastBatchSize", 2);
     std::string tCrop = ini.Get(S, "LastCropSize", "0");
-    gpuIdsMulti = ini.Get(S, "LastGpuIds", "");
-    tileMulti = ini.Get(S, "LastTileSizes", "");
-    procMulti = ini.Get(S, "LastProcThreads", "");
-    loadThreads = std::max(1, ini.GetInt(S, "LastLoadThreads", 1));
-    saveThreads = std::max(1, ini.GetInt(S, "LastSaveThreads", 2));
-    verboseLog = ini.GetInt(S, "LastVerboseLog", 0) != 0;
     syncgap = std::min(3, std::max(0, ini.GetInt(S, "LastSyncGap", 3)));
+    vramPercent = std::min(80, std::max(20, ini.GetInt(S, "LastVramPercent", 60)));
+    ramPercent = std::min(80, std::max(20, ini.GetInt(S, "LastRamPercent", 60)));
     {
         // the explorer (FileBrowser) as it was left
         FileBrowser::Prefs& bp = fileBrowser.prefs;
@@ -1950,8 +1878,7 @@ void DialogEvent::Create(int argc, char** argv)
     SetCropSizeList("");
     CopyStr(comboCrop, sizeof(comboCrop), tCrop);
 
-    checkTTA = use_tta;
-    if (!(1 <= batch_size && batch_size <= 64)) batch_size = 2;
+    if (!(1 <= batch_size && batch_size <= 32)) batch_size = std::min(32, std::max(1, batch_size)); // at most 32 (older versions allowed more)
     CopyStr(comboBatch, sizeof(comboBatch), std::to_string(batch_size));
 
     SetScaleRatioText(tScaleRatio); // older settings stored 6 decimals: shown rounded to 2
@@ -1960,7 +1887,7 @@ void DialogEvent::Create(int argc, char** argv)
     SetScaleWHText(tScaleWidthHeight);
     CopyStr(editExtList, sizeof(editExtList), ExtListDisplay());
 
-    if (!tOutputDirFix.empty() && PathExists(tOutputDirFix))
+    if (useCustomDirs && !tOutputDirFix.empty() && PathExists(tOutputDirFix))
     {
         output_dir = tOutputDirFix;
         CopyStr(editOutput, sizeof(editOutput), output_dir);
@@ -1977,166 +1904,12 @@ void DialogEvent::Create(int argc, char** argv)
 
     FixModeForModel();
 
-    ParseCommandLine(argc, argv);
-
     // first start, a replaced (broken) file or deleted keys: write setting.ini now with every key, so it holds the
     // language in use (English on a first start) and all defaults from the beginning, not only after closing
     if (langName != LangName || settingMissing) SaveIni();
     PruneRememberedFolders();
 
     isSetInitCrop = false;
-}
-
-void DialogEvent::ParseCommandLine(int argc, char** argv)
-{
-    // same options as waifu2x-caffe-gui (TCLAP definitions in MainDialog.cpp) + ncnn extras
-    input_str_multi.clear();
-    if (argc <= 1) return;
-
-    std::vector<std::string> inputs;
-    std::map<std::string, std::string> v;
-    std::set<std::string> isSet;
-    struct Opt { const char* s; const char* l; };
-    static const Opt opts[] = {
-        {"o", "output_folder"}, {"l", "input_extention_list"}, {"e", "output_extention"}, {"m", "mode"},
-        {"n", "noise_level"}, {"s", "scale_ratio"}, {"w", "scale_width"}, {"h", "scale_height"}, {"p", "process"},
-        {"q", "output_quality"}, {"d", "output_depth"}, {"c", "crop_size"}, {"b", "batch_size"}, {"", "gpu"},
-        {"t", "tta"}, {"", "auto_start"}, {"", "auto_exit"}, {"", "no_overwrite"}, {"y", "model_type"},
-        {"j", "jobs"}, {"", "verbose_log"},
-    };
-    for (int i = 1; i < argc; i++)
-    {
-        std::string a = argv[i];
-        const Opt* found = nullptr;
-        std::string val;
-        bool inlineVal = false;
-        if (a.size() >= 2 && a[0] == '-' && !(a.size() > 1 && isdigit((unsigned char)a[1])))
-        {
-            std::string name = a[1] == '-' ? a.substr(2) : a.substr(1);
-            size_t eq = name.find('=');
-            if (eq != std::string::npos) { val = name.substr(eq + 1); name = name.substr(0, eq); inlineVal = true; }
-            for (const auto& o : opts)
-                if ((a[1] == '-' && name == o.l) || (a[1] != '-' && name == o.s && o.s[0])) found = &o;
-            if (!found) continue; // TCLAPW::Arg::enableIgnoreMismatched()
-            if (!inlineVal)
-            {
-                if (i + 1 >= argc) break;
-                val = argv[++i];
-            }
-            v[found->l] = val;
-            isSet.insert(found->l);
-        }
-        else
-            inputs.push_back(a);
-    }
-
-    bool isSetParam = false;
-    auto has = [&](const char* k) { return isSet.count(k) != 0; };
-
-    if (has("output_folder")) { OnSetOutputFilePath(v["output_folder"]); isSetParam = true; }
-    // input_extention_list: accepted for old command lines, the types are fixed
-    if (has("output_extention"))
-    {
-        std::string e = v["output_extention"];
-        const OutputFormatInfo* f = find_output_format(e.c_str());
-        if (f)
-            for (int i = 0; i < g_output_format_count; i++)
-                if (&g_output_formats[i] == f) { outExtIndex = i; SetQuality(); }
-        isSetParam = true;
-    }
-    if (has("mode"))
-    {
-        const std::string m = v["mode"];
-        radioMode = m == "noise" ? 2 : m == "scale" ? 1 : m == "auto_scale" ? 3 : 0;
-        isSetParam = true;
-    }
-    if (has("noise_level"))
-    {
-        long n;
-        if (ParseInt(v["noise_level"], n) && n >= 0 && n <= 3) radioNoise = (int)n;
-        isSetParam = true;
-    }
-    if (has("scale_width") && has("scale_height"))
-    {
-        radioScale = eScaleTypeWidthHeight;
-        if (!SetScaleWHText(v["scale_width"] + "x" + v["scale_height"])) ShowScaleWHWarning();
-        isSetParam = true;
-    }
-    else if (has("scale_width"))
-    {
-        radioScale = eScaleTypeWidth;
-        if (IsValidWHText(v["scale_width"].c_str()) && v["scale_width"].find('x') == std::string::npos) CopyStr(editScaleWidth, sizeof(editScaleWidth), v["scale_width"]);
-        else ShowScaleNumWarning();
-        isSetParam = true;
-    }
-    else if (has("scale_height"))
-    {
-        radioScale = eScaleTypeHeight;
-        if (IsValidWHText(v["scale_height"].c_str()) && v["scale_height"].find('x') == std::string::npos) CopyStr(editScaleHeight, sizeof(editScaleHeight), v["scale_height"]);
-        else ShowScaleNumWarning();
-        isSetParam = true;
-    }
-    else if (has("scale_ratio"))
-    {
-        radioScale = eScaleTypeRatio;
-        if (!SetScaleRatioText(v["scale_ratio"])) ShowScaleRateWarning();
-        isSetParam = true;
-    }
-    if (has("process")) { process = v["process"] == "cpu" ? "cpu" : "gpu"; isSetParam = true; }
-    if (has("output_quality")) { CopyStr(editQuality, sizeof(editQuality), v["output_quality"]); isSetParam = true; }
-    // output_depth (-d): accepted for waifu2x-caffe command lines, the output is always 8 bit
-    if (has("crop_size")) { CopyStr(comboCrop, sizeof(comboCrop), v["crop_size"]); isSetParam = true; isSetInitCrop = true; }
-    if (has("batch_size")) { CopyStr(comboBatch, sizeof(comboBatch), v["batch_size"]); isSetParam = true; }
-    if (has("gpu"))
-    {
-        const std::string g = v["gpu"];
-        if (g.find(',') != std::string::npos) gpuIdsMulti = g;
-        else
-        {
-            long n;
-            if (ParseInt(g, n)) { if (n < 0) process = "cpu"; else { process = "gpu"; gpu_no = (int)n; } }
-        }
-        isSetParam = true;
-    }
-    if (has("tta")) { checkTTA = v["tta"] != "0"; isSetParam = true; }
-    if (has("auto_start")) { isArgStartAuto = v["auto_start"] != "0"; isSetParam = true; }
-    if (has("auto_exit")) { isArgStartSuccessFinish = v["auto_exit"] != "0"; isSetParam = true; }
-    if (has("model_type"))
-    {
-        for (size_t i = 0; i < models.size(); i++)
-            if (models[i].type == v["model_type"] || models[i].folder == v["model_type"]) comboModel = (int)i;
-        isSetParam = true;
-    }
-    if (has("no_overwrite")) { isOutputNoOverwrite = v["no_overwrite"] != "0"; isSetParam = true; }
-    if (has("jobs"))
-    {
-        auto c = Split(v["jobs"], ':', false);
-        if (c.size() == 3)
-        {
-            loadThreads = std::max(1, atoi(c[0].c_str()));
-            if (c[1].find(',') != std::string::npos) procMulti = c[1];
-            else CopyStr(comboBatch, sizeof(comboBatch), c[1]);
-            saveThreads = std::max(1, atoi(c[2].c_str()));
-        }
-        isSetParam = true;
-    }
-    if (has("verbose_log")) { verboseLog = v["verbose_log"] != "0"; isSetParam = true; }
-
-    if (isSetParam) isNotSaveParam = true;
-
-    if (inputs.size() > 1)
-    {
-        input_str_multi = inputs;
-        OnSetInputFilePath();
-    }
-    else if (inputs.size() == 1)
-        OnSetInputFilePath(inputs[0]);
-
-    if (!inputs.empty() && isArgStartAuto)
-    {
-        isCommandLineStart = true;
-        Exec();
-    }
 }
 
 // ============================================================================ drawing helpers
@@ -2184,7 +1957,7 @@ namespace
     {
         ImGui::GetWindowDrawList()->AddText(ImGui::GetFont(), f.size, pos, ImGui::GetColorU32(ImGuiCol_Text), f.text.c_str());
         if (f.cut && ImGui::IsMouseHoveringRect(pos, ImVec2(pos.x + TextW(f.text, f.size), pos.y + f.size)))
-            ImGui::SetTooltip("%s", full.c_str());
+            TooltipText("%s", full.c_str());
     }
 
     void GroupBox(const std::string& title, float x, float y, float w, float h, bool center = false)
@@ -2247,6 +2020,14 @@ namespace
     }
 
     // label of a field row (14 high, like Edit / Combo): vertically centred on the field; right = edge it must not cross
+    // a label ending at 'right' (next to the field it names)
+    void RightLabel(const std::string& text, float x, float y, float right)
+    {
+        const FitLabel f = Fit(text, W(right - x));
+        const ImVec2 o = ImGui::GetWindowPos();
+        DrawFit(f, ImVec2(o.x + P(right, 0).x - TextW(f.text, f.size), o.y + P(0, y).y + (H(14) - f.size) * 0.5f), text);
+    }
+
     void RowLabel(const std::string& text, float x, float y, float right)
     {
         const FitLabel f = Fit(text, W(right - x));
@@ -2272,7 +2053,7 @@ namespace
         if (!f.fits) ImGui::PushFont(nullptr, f.size);
         bool r = ImGui::Button((f.text + "##" + id).c_str(), ImVec2(W(w), h > 0 ? H(h) : ImGui::GetFrameHeight()));
         if (!f.fits) ImGui::PopFont();
-        if (f.cut && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", label.c_str());
+        if (f.cut && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) TooltipText("%s", label.c_str());
         ImGui::EndDisabled();
         return r;
     }
@@ -2311,15 +2092,29 @@ namespace
             ImGui::GetColorU32(ImGuiCol_Text), f.text.c_str());
         if (ImGui::InvisibleButton((std::string("##lbl") + id).c_str(), ImVec2(std::max(1.0f, TextW(f.text, f.size)), fh)))
             changed |= widget(nullptr);
-        if (f.cut && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", label.c_str());
+        if (f.cut && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) TooltipText("%s", label.c_str());
         return changed;
     }
+
+    // the value of a text field drawn in its middle: ImGui has no centred input, so the left padding takes half of
+    // the free width (a value longer than the field starts at the normal padding)
+    struct CenterText
+    {
+        CenterText(const char* text, float widthPx)
+        {
+            const ImGuiStyle& st = ImGui::GetStyle();
+            const float pad = std::max(st.FramePadding.x, std::floor((widthPx - ImGui::CalcTextSize(text).x) * 0.5f));
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(pad, st.FramePadding.y));
+        }
+        ~CenterText() { ImGui::PopStyleVar(); }
+    };
 
     bool Edit(const char* id, char* buf, size_t n, float x, float y, float w, float h, bool enabled = true, ImGuiInputTextFlags flags = 0)
     {
         At(x, y, h);
         ImGui::SetNextItemWidth(W(w));
         ImGui::BeginDisabled(!enabled);
+        CenterText ct(buf, W(w));
         bool r = ImGui::InputText(id, buf, n, flags);
         ImGui::EndDisabled();
         return r;
@@ -2355,6 +2150,23 @@ namespace
         return r;
     }
 
+    // the list of a drop-down opens right under its box: at most 20 rows, shorter with a scrollbar when the window
+    // has less room below (otherwise ImGui moves it next to or over the box to keep it inside the window)
+    float g_nextListMinW = 0; // set before a Combo: the list is at least this wide (dialog pixels), used once
+    int g_nextListRows = 20;  // set before a Combo: at most this many rows, used once
+    void ListUnderBox(float boxBottom, float minW, float maxW)
+    {
+        const ImGuiStyle& st = ImGui::GetStyle();
+        const ImGuiViewport* vp = ImGui::GetMainViewport();
+        minW = std::max(minW, g_nextListMinW);
+        maxW = std::max(maxW, minW);
+        const float large = (ImGui::GetFontSize() + st.ItemSpacing.y) * g_nextListRows - st.ItemSpacing.y + st.WindowPadding.y * 2;
+        g_nextListMinW = 0;
+        g_nextListRows = 20;
+        const float room = vp->WorkPos.y + vp->WorkSize.y - st.DisplaySafeAreaPadding.y - boxBottom - 1;
+        ImGui::SetNextWindowSizeConstraints(ImVec2(minW, 0), ImVec2(maxW, std::max(ImGui::GetFontSize() * 2, std::min(large, room))));
+    }
+
     // previewText: what the closed box shows instead of the selected item (nullptr = the item)
     bool Combo(const char* id, int* cur, const std::vector<std::string>& items, float x, float y, float w, bool enabled = true,
                const std::string* previewText = nullptr, const std::vector<std::string>* shortItems = nullptr)
@@ -2370,6 +2182,7 @@ namespace
         const float fh = ImGui::GetFrameHeight();
         const float padX = ImGui::GetStyle().FramePadding.x;
         const float textL = p0.x + padX, textR = p0.x + W(w) - fh - padX;
+        ListUnderBox(p0.y + fh, W(w), FLT_MAX);
         if (ImGui::BeginCombo(id, "", ImGuiComboFlags_HeightLarge))
         {
             ImGui::PushStyleVar(ImGuiStyleVar_SelectableTextAlign, ImVec2(0.5f, 0.5f));
@@ -2392,7 +2205,7 @@ namespace
         dl->AddText(ImGui::GetFont(), f.size, ImVec2(std::max(textL, (textL + textR - tw) * 0.5f), p0.y + (fh - f.size) * 0.5f),
             ImGui::GetColorU32(ImGuiCol_Text), f.text.c_str());
         dl->PopClipRect();
-        if ((f.cut || useShort) && hovered && !ImGui::IsPopupOpen(id)) ImGui::SetTooltip("%s", preview.c_str());
+        if ((f.cut || useShort) && hovered && !ImGui::IsPopupOpen(id)) TooltipText("%s", preview.c_str());
         ImGui::EndDisabled();
         return changed;
     }
@@ -2404,23 +2217,32 @@ namespace
         ImGui::BeginDisabled(!enabled);
         const float bw = ImGui::GetFrameHeight();
         ImGui::SetNextItemWidth(W(w) - bw);
-        bool changed = ImGui::InputText((std::string("##edit") + id).c_str(), buf, n, ImGuiInputTextFlags_CharsDecimal);
+        bool changed;
+        {
+            CenterText ct(buf, W(w) - bw);
+            changed = ImGui::InputText((std::string("##edit") + id).c_str(), buf, n, ImGuiInputTextFlags_CharsDecimal);
+        }
         ImGui::SameLine(0, 0);
         ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 0));
+        // the list is as wide as the text field + arrow, right-aligned to the arrow (so it starts under the field), like the language list
+        ListUnderBox(ImGui::GetItemRectMax().y, W(w), W(w));
         if (ImGui::BeginCombo(id, nullptr, ImGuiComboFlags_NoPreview | ImGuiComboFlags_PopupAlignLeft | ImGuiComboFlags_HeightLarge))
         {
+            ImGui::PushStyleVar(ImGuiStyleVar_SelectableTextAlign, ImVec2(0.5f, 0.5f));
             for (const auto& it : items)
             {
                 const bool sep = it == CropSeparator;
                 if (sep) { ImGui::Separator(); continue; }
                 if (ImGui::Selectable(it.c_str(), it == buf)) { snprintf(buf, n, "%s", it.c_str()); changed = true; }
             }
+            ImGui::PopStyleVar();
             ImGui::EndCombo();
         }
         ImGui::PopStyleVar();
         ImGui::EndDisabled();
         return changed;
     }
+
 }
 
 // ============================================================================ frame
@@ -2627,8 +2449,7 @@ void DialogEvent::ApplyPicked(int target, const std::vector<std::string>& r)
             input_str_multi.clear();
             if (r.size() == 1) OnSetInputFilePath(r[0]);
             else { input_str_multi = r; OnSetInputFilePath(); }
-            if (tAutoMode == "one" || (tAutoMode == "multi" && (!input_str_multi.empty() || IsDirectory(r[0]))))
-                Exec();
+
         }
         else if (fileBrowserTarget == 2 && !r.empty())
             OnSetOutputFilePath(r[0]);
@@ -2703,6 +2524,7 @@ void DialogEvent::DrawMain(float s)
         ImGui::BeginDisabled(!qualityEnabled);
         const bool wasActive = ImGui::GetActiveID() == ImGui::GetID("##quality");
         if (!wasActive) qualityLastValid = editQuality; // text set by the program (format change, settings)
+        CenterText ctq(editQuality, W(84));
         ImGui::InputText("##quality", editQuality, sizeof(editQuality),
             ImGuiInputTextFlags_CallbackCharFilter | ImGuiInputTextFlags_CallbackEdit, &DialogEvent::QualityCallback, this);
         ImGui::EndDisabled();
@@ -2720,7 +2542,7 @@ void DialogEvent::DrawMain(float s)
                 for (char& c : up) if (c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');
                 tip = Format(T("%s has no quality setting.").c_str(), up.c_str());
             }
-            ImGui::SetTooltip("%s", tip.c_str());
+            TooltipText("%s", tip.c_str());
         }
         if (qualityWarn)
         {
@@ -2738,7 +2560,7 @@ void DialogEvent::DrawMain(float s)
         const ImVec2 o = ImGui::GetWindowPos();
         DrawFit(f, ImVec2(o.x + P(395, 0).x + (W(76) - TextW(depth, extListSize)) * 0.5f, o.y + P(0, 69).y + (H(14) - extListSize) * 0.5f), depth);
         if (HoverRect(395, 57, 76, 29))
-            ImGui::SetTooltip("%s", T("RePicturer only supports 8-bit output.\n"
+            TooltipText("%s", T("RePicturer only supports 8-bit output.\n"
                 "The AI models work in 8-bit, so a higher bit depth would not add any real color detail.").c_str());
     }
 
@@ -2754,8 +2576,8 @@ void DialogEvent::DrawMain(float s)
     CText("VERSION: " APP_VERSION_NUM, 476, 75, 95, 14);
     if (Button(L("IDC_BUTTON_CLEAR_OUTPUT_DIR"), "clearout", 575, 75, 79, 14, !running)) resetConfirmRequest = true;
 
-    // ---- Conversion Image Quality & Processing Settings
-    GroupBox(L("IDC_STATIC_QUALITY_PROCESS_SETTING"), 7, 97, 495, 94);
+    // ---- Image Quality & Processing Settings (with Split size / Thread(s))
+    GroupBox(L("IDC_STATIC_QUALITY_PROCESS_SETTING"), 7, 97, 572, 94);
 
     const ModelEntry* cm = CurrentModel();
     const bool isEsrgan = cm && cm->engine == EngineRealESRGAN;
@@ -2784,7 +2606,7 @@ void DialogEvent::DrawMain(float s)
     else if (scaleOnly) onlyTip = Format(T("%s only allows scaling conversion, it has no denoising.").c_str(), modelName.c_str());
     else if (denoiseOnly) onlyTip = Format(T("%s only allows denoising, it has no scaling.").c_str(), modelName.c_str());
     auto onlyModeTip = [&]() {
-        if (!onlyTip.empty() && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", onlyTip.c_str());
+        if (!onlyTip.empty() && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) TooltipText("%s", onlyTip.c_str());
     };
     GroupBox(L("IDC_STATIC_TRANS_MODE"), 13, 108, 121, 76);
     bool modeChanged = false;
@@ -2795,11 +2617,11 @@ void DialogEvent::DrawMain(float s)
     modeChanged |= Radio(L("IDC_RADIO_MODE_NOISE"), "m2", &radioMode, 2, 21, 153, canDenoise && !builtIn, 0, denoiseOnly);
     if (!onlyTip.empty()) onlyModeTip();
     else if (isEsrgan && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-        ImGui::SetTooltip("%s", Format(L2("TipModelDenoiseOnly", "%s: the image is cleaned up at the network scale and shrunk back to the original size").c_str(), modelName.c_str()).c_str());
+        TooltipText("%s", Format(L2("TipModelDenoiseOnly", "%s: the image is cleaned up at the network scale and shrunk back to the original size").c_str(), modelName.c_str()).c_str());
     modeChanged |= Radio(L("IDC_RADIO_AUTO_SCALE"), "m3", &radioMode, 3, 21, 169, canDenoise && canMagnify && !builtIn);
     if (!onlyTip.empty()) onlyModeTip();
     else if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-        ImGui::SetTooltip("%s", L2("TipAutoScale", "Scales every image but denoises only JPEG sources (like waifu2x-caffe).\n"
+        TooltipText("%s", L2("TipAutoScale", "Scales every image but denoises only JPEG sources (like waifu2x-caffe).\n"
             "PNG and other images are only scaled - use \"Denoise & Scale\" to always do both.").c_str());
     if (modeChanged) OnModeChange();
 
@@ -2821,26 +2643,26 @@ void DialogEvent::DrawMain(float s)
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
         {
             if (detailLevels)
-                ImGui::SetTooltip("%s", Format(T("%s: the detail level blends it with ESRGAN PSNR, the soft model it was trained from\n"
+                TooltipText("%s", Format(T("%s: the detail level blends it with ESRGAN PSNR, the soft model it was trained from\n"
                     "Faithful = 40 %%, Balanced = 60 %%, Detailed = 80 %%, Maximum = 100 %% (plain %s). Used in every mode").c_str(),
                     modelName.c_str(), modelName.c_str()).c_str());
             else if (esrLevels && cm->type == "lsdir-compact")
-                ImGui::SetTooltip("%s", T("LSDIR Compact: the level sets how much it cleans up\n"
+                TooltipText("%s", T("LSDIR Compact: the level sets how much it cleans up\n"
                     "Level 0 = JPEG only, Level 1-2 = more, Level 3 = blur, noise and JPEG (Scale only = no cleanup, most detail)").c_str());
             else if (esrLevels)
-                ImGui::SetTooltip("%s", T("Real-ESRGAN General: the level sets the denoise strength\n"
+                TooltipText("%s", T("Real-ESRGAN General: the level sets the denoise strength\n"
                     "Level 0 = 25 %, Level 1 = 50 %, Level 2 = 75 %, Level 3 = 100 % (Scale only = weakest)").c_str());
             else if (isEsrgan)
-                ImGui::SetTooltip("%s", Format(L2("TipModelNoNoise", "%s removes noise / JPEG artifacts / blur by itself; there is no denoise level").c_str(), modelName.c_str()).c_str());
+                TooltipText("%s", Format(L2("TipModelNoNoise", "%s removes noise / JPEG artifacts / blur by itself; there is no denoise level").c_str(), modelName.c_str()).c_str());
             else if (cm && !canDenoise)
-                ImGui::SetTooltip("%s", Format(T("%s only allows scaling conversion, it has no denoising.").c_str(), modelName.c_str()).c_str());
+                TooltipText("%s", Format(T("%s only allows scaling conversion, it has no denoising.").c_str(), modelName.c_str()).c_str());
             else if (isCugan && lv == 0)
-                ImGui::SetTooltip("%s", L2("TipCuganLevel0", "Real-CUGAN: Level 0 = conservative (keeps the most original detail)").c_str());
+                TooltipText("%s", L2("TipCuganLevel0", "Real-CUGAN: Level 0 = conservative (keeps the most original detail)").c_str());
             else if (lv == 0)
-                ImGui::SetTooltip("%s", L2("TipLevel0", "Level 0 is the lightest denoise: on clean images the difference is small.\n"
+                TooltipText("%s", L2("TipLevel0", "Level 0 is the lightest denoise: on clean images the difference is small.\n"
                     "Use Level 1-3 for visible noise or JPEG artifacts.").c_str());
             else if (cm && !cm->NoiseLevelAvailable(lv))
-                ImGui::SetTooltip("%s", L2("TipLevelMissing", "this model has no network for this denoise level").c_str());
+                TooltipText("%s", L2("TipLevelMissing", "this model has no network for this denoise level").c_str());
         }
     }
     if (noiseChanged) ReplaceAddString();
@@ -2857,12 +2679,13 @@ void DialogEvent::DrawMain(float s)
         At(311, 119, 14);
         ImGui::SetNextItemWidth(W(49));
         ImGui::BeginDisabled(!(isScale && radioScale == 0));
+        CenterText cts(editScaleRatio, W(49));
         if (ImGui::InputText("##sratio", editScaleRatio, sizeof(editScaleRatio),
                 ImGuiInputTextFlags_CallbackCharFilter | ImGuiInputTextFlags_CallbackEdit, &DialogEvent::ScaleRatioCallback, this))
             ReplaceAddString();
         ImGui::EndDisabled();
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("%s", L2("TipScaleRate", "numbers only, up to 2 decimals (e.g. 1.5, 2.25)").c_str());
+            TooltipText("%s", L2("TipScaleRate", "numbers only, up to 2 decimals (e.g. 1.5, 2.25)").c_str());
         if (scaleRateWarn)
         {
             scaleRateWarn = false;
@@ -2879,11 +2702,12 @@ void DialogEvent::DrawMain(float s)
             At(311, k == 0 ? 135.f : 151.f, 14);
             ImGui::SetNextItemWidth(W(49));
             ImGui::BeginDisabled(!(isScale && (radioScale == k + 1 || radioScale == 3))); // <Width>x<Height> uses both
+            CenterText ctw(bufs[k], W(49));
             if (ImGui::InputText(ids[k], bufs[k], sizes[k], ImGuiInputTextFlags_CallbackCharFilter, &DialogEvent::DigitsOnlyCallback, this))
                 ReplaceAddString();
             ImGui::EndDisabled();
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-                ImGui::SetTooltip("%s", L2("TipScaleNum", "whole numbers only (0-9), in pixels").c_str());
+                TooltipText("%s", L2("TipScaleNum", "whole numbers only (0-9), in pixels").c_str());
         }
         if (scaleNumWarn)
         {
@@ -2907,10 +2731,10 @@ void DialogEvent::DrawMain(float s)
             y += lh;
         }
         if (HoverRect(311, 167, 51, 14))
-            ImGui::SetTooltip("%s", T("Enter your desired <Width> and <Height> values in two text fields above.").c_str());
+            TooltipText("%s", T("Enter your desired <Width> and <Height> values in two text fields above.").c_str());
     }
 
-    GroupBox(L("IDC_STATIC_MODEL"), 368, 109, 130, 33);
+    GroupBox(L("IDC_STATIC_MODEL"), 368, 109, 130, 37);
     {
         std::vector<std::string> items;
         for (const auto& m : models)
@@ -2929,22 +2753,22 @@ void DialogEvent::DrawMain(float s)
         if (items.empty()) items.push_back(T("(no models-* folder)"));
         // the list entries are longer than the box: let the popup grow
         // and at most 10 rows high: more models scroll (the selected one is scrolled into view)
-        const float listMaxH = ImGui::GetTextLineHeightWithSpacing() * 10 + ImGui::GetStyle().WindowPadding.y * 2;
-        ImGui::SetNextWindowSizeConstraints(ImVec2(W(215), 0), ImVec2(FLT_MAX, listMaxH));
+        g_nextListMinW = W(215);
+        g_nextListRows = 10;
         // the closed box shows the model name only ("Real-CUGAN SE"), the list shows name - description
         std::string shortName;
         if (comboModel >= 0 && comboModel < (int)items.size())
             shortName = items[comboModel].substr(0, items[comboModel].find(" - "));
-        if (Combo("##model", &comboModel, items, 372, 120, 110, true, &shortName)) OnModelChange();
+        if (Combo("##model", &comboModel, items, 372, 123, 110, true, &shortName)) OnModelChange();
         if (comboModel >= 0 && comboModel < (int)items.size() && ImGui::IsItemHovered())
-            ImGui::SetTooltip("%s", items[comboModel].c_str());
-        if (HelpButton("modelhelp", 483, 120, 13)) modelHelpRequest = true;
+            TooltipText("%s", items[comboModel].c_str());
+        if (HelpButton("modelhelp", 483, 123, 13)) modelHelpRequest = true;
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("%s", L2("TipModelHelp", "Which model for which picture? Every model explained").c_str());
+            TooltipText("%s", L2("TipModelHelp", "Which model for which picture? Every model explained").c_str());
     }
 
     // ncnn: device selection (vulkan gpu / cpu) right on the main window
-    GroupBox(L2("IDC_STATIC_DEVICE", "Device"), 368, 143, 130, 29);
+    GroupBox(L2("IDC_STATIC_DEVICE", "Processing Unit"), 368, 147, 130, 37);
     {
         int idx = DeviceComboIndex();
         std::vector<std::string> items = DeviceComboItems();
@@ -2955,51 +2779,51 @@ void DialogEvent::DrawMain(float s)
             items[0] += " - " + L2("MessageDetecting", "detecting...");
             shortItems[0] = L2("MessageDetecting", "detecting...");
         }
-        if (Combo("##device", &idx, items, 372, 154, 122, true, nullptr, &shortItems)) SetDeviceFromCombo(idx);
-        if (!Trim(gpuIdsMulti).empty() && ImGui::IsItemHovered())
-            ImGui::SetTooltip("%s: %s", L2("IDC_STATIC_MULTI_GPU", "Multi GPU ids").c_str(), gpuIdsMulti.c_str());
+        if (Combo("##device", &idx, items, 372, 161, 122, true, nullptr, &shortItems)) SetDeviceFromCombo(idx);
+        if (!ImGui::IsPopupOpen("##device") && (ImGui::IsItemHovered() || HoverRect(368, 147, 130, 37)))
+            TooltipText("%s", L2("TipProcessingUnit", "Which part of the computer runs the AI.\n"
+                "GPU (graphics card): runs on Vulkan - fast. Works with NVIDIA, AMD and Intel, no CUDA needed.\n"
+                "CPU (processor): works without Vulkan - much slower, but on any computer.\n"
+                "Auto: the GPU, or the CPU when no GPU with Vulkan is found.").c_str());
     }
 
-    if (Check(L("IDC_CHECK_TTA"), "tta", &checkTTA, 371, 176)) ReplaceAddString();
+    // ---- Split size / Thread(s): two equal boxes right of Model / Device, the same height, controls centred in them
 
-    // ---- Processing Speed Settings
-    // speed box as tall as the quality box; split size / thread(s) boxes the same size, controls centred in them
-    GroupBox(L2("IDC_STATIC_PROCESS_SPEED_SETTING", "Processing Speed"), 507, 97, 82, 94);
-
-    GroupBox(L("IDC_STATIC_CROP_SIZE"), 512, 107, 72, 36);
-    EditCombo("##crop", comboCrop, sizeof(comboCrop), cropItems, 516, 121.5f, 46);
-    if (HoverRect(512, 107, 50, 36))
-        ImGui::SetTooltip("%s", L2("TipCropSize", "Size of the pieces the image is cut into for the GPU.\n"
+    GroupBox(L("IDC_STATIC_CROP_SIZE"), 503, 109, 72, 37);
+    EditCombo("##crop", comboCrop, sizeof(comboCrop), cropItems, 507, 123, 46);
+    if (HoverRect(503, 109, 50, 37))
+        TooltipText("%s", L2("TipCropSize", "Size of the pieces the image is cut into for the GPU.\n"
             "0 = automatic from the free GPU memory (recommended).\n"
             "Bigger = a little faster but needs more memory. Click ? for details.").c_str());
-    if (HelpButton("crophelp", 565, 121.5f, 15)) speedHelpRequest = true;
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", L2("TipSpeedHelp", "What do Split size and Thread(s) do?").c_str());
+    if (HelpButton("crophelp", 556, 123, 15)) speedHelpRequest = true;
+    if (ImGui::IsItemHovered()) TooltipText("%s", L2("TipSpeedHelp", "What do Split size and Thread(s) do?").c_str());
 
-    GroupBox(L2("IDC_STATIC_PROC_THREADS", "Thread(s)"), 512, 151, 72, 36);
+    GroupBox(L2("IDC_STATIC_PROC_THREADS", "Thread(s)"), 503, 147, 72, 37);
     {
         std::vector<std::string> items;
         for (int i = 1; i <= MaxBatchSizeList; i++) items.push_back(std::to_string(i));
         // heavy models: greyed out and shown as 1 (the user's value is kept for the other models)
         const bool heavy = cm && cm->heavy;
         char one[4] = "1";
-        if (heavy) EditCombo("##batch", one, sizeof(one), items, 516, 165.5f, 46, false);
-        else EditCombo("##batch", comboBatch, sizeof(comboBatch), items, 516, 165.5f, 46);
-        if (heavy && HoverRect(512, 151, 50, 36))
-            ImGui::SetTooltip("%s", Format(T("Thread(s) is locked at 1 for heavy models like %s:\n"
+        if (heavy) EditCombo("##batch", one, sizeof(one), items, 507, 161, 46, false);
+        else EditCombo("##batch", comboBatch, sizeof(comboBatch), items, 507, 161, 46);
+        if (heavy && HoverRect(503, 147, 50, 37))
+            TooltipText("%s", Format(T("Thread(s) is locked at 1 for heavy models like %s:\n"
                 "each GPU converts one image at a time, so it does not run out of GPU memory").c_str(), modelName.c_str()).c_str());
-        else if (HoverRect(512, 151, 50, 36))
-            ImGui::SetTooltip("%s", L2("TipThreads", "GPU: how many images are converted at the same time (helps folders / many files).\n"
+        else if (HoverRect(503, 147, 50, 37))
+            TooltipText("%s", L2("TipThreads", "GPU: how many images are converted at the same time (helps folders / many files).\n"
                 "CPU fallback: how many CPU cores are used.\n"
                 "Default 2. Click ? for details.").c_str());
-        if (HelpButton("threadhelp", 565, 165.5f, 15)) speedHelpRequest = true;
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", L2("TipSpeedHelp", "What do Split size and Thread(s) do?").c_str());
+        if (HelpButton("threadhelp", 556, 161, 15)) speedHelpRequest = true;
+        if (ImGui::IsItemHovered()) TooltipText("%s", L2("TipSpeedHelp", "What do Split size and Thread(s) do?").c_str());
     }
 
-    // one column, same gap (8) between the buttons: from the top of "Split size" to the bottom of "Thread(s)"
-    if (Button(L("IDC_BUTTON_APP_SETTING"), "appset", 604, 107, 54, 14)) AppSetting();
-    if (Button(L2("IDC_BUTTON_CHECK_GPU", "Check GPU"), "checkgpu", 604, 129, 54, 14, !running)) CheckGPU();
-    if (Button(L("IDC_BUTTON_EXEC"), "exec", 604, 151, 54, 14, !running)) Exec();
-    if (Button(L("IDC_BUTTON_CANCEL"), "cancel", 604, 173, 54, 14, running && !cancelFlag)) Cancel();
+    // one column centred between the quality box (right edge 579) and the window edge (658),
+    // from the top of "Split size" to the bottom of "Thread(s)" with equal gaps
+    if (Button(L("IDC_BUTTON_APP_SETTING"), "appset", 588.5f, 109, 60, 14)) AppSetting();
+    if (Button(L2("IDC_BUTTON_CHECK_GPU", "Re-Detect GPU"), "checkgpu", 588.5f, 129.33f, 60, 14, !running)) CheckGPU();
+    if (Button(L("IDC_BUTTON_EXEC"), "exec", 588.5f, 149.67f, 60, 14, !running)) Exec();
+    if (Button(L("IDC_BUTTON_CANCEL"), "cancel", 588.5f, 170, 60, 14, running && !cancelFlag)) Cancel();
 
     // ---- progress
     {
@@ -3052,117 +2876,217 @@ void DialogEvent::DrawMain(float s)
     (void)s;
 }
 
+// the share of free VRAM / RAM: 2 digits, 20-80
+static bool PercentValid(const char* t)
+{
+    if (strlen(t) != 2 || t[0] < '0' || t[0] > '9' || t[1] < '0' || t[1] > '9') return false;
+    const int v = atoi(t);
+    return v >= 20 && v <= 80;
+}
+
+// what may be typed on the way to 20-80: empty, a first digit 2-8, then 20-80
+static bool PercentTyping(const std::string& t)
+{
+    if (t.empty()) return true;
+    if (t.size() == 1) return t[0] >= '2' && t[0] <= '8';
+    return PercentValid(t.c_str());
+}
+
+int DialogEvent::PercentCallback(ImGuiInputTextCallbackData* data)
+{
+    DialogEvent* self = (DialogEvent*)data->UserData;
+    std::string& last = data->Buf == self->app.vramText ? self->app.vramLast : self->app.ramLast;
+    if (data->EventFlag == ImGuiInputTextFlags_CallbackCharFilter)
+    {
+        if (data->EventChar >= '0' && data->EventChar <= '9') return 0;
+        self->percentWarn = true;
+        return 1;
+    }
+    if (data->EventFlag == ImGuiInputTextFlags_CallbackEdit)
+    {
+        const std::string t(data->Buf, data->BufTextLen);
+        if (PercentTyping(t))
+            last = t;
+        else
+        {
+            // e.g. 1, 9, 15, 85: undone right away, with the warning
+            data->DeleteChars(0, data->BufTextLen);
+            data->InsertChars(0, last.c_str());
+            data->CursorPos = data->BufTextLen;
+            data->SelectionStart = data->SelectionEnd = data->CursorPos;
+            self->percentWarn = true;
+        }
+    }
+    return 0;
+}
+
+void DialogEvent::ShowPercentWarning()
+{
+    const std::string text = T("Only 1 valid value between 20 and 80 (percentage) is accepted.");
+    for (const auto& m : msgBoxes)
+        if (m.text == text) return;
+    MessageBox(text, L("MessageTitleError"), IconWarning);
+}
+
+// total and free RAM in MB (the App Setting window shows them, refreshed once a second)
+static void SystemRam(uint64_t& totalMB, uint64_t& freeMB)
+{
+    static uint64_t t = 0, f = 0;
+    static std::chrono::steady_clock::time_point last;
+    const auto now = std::chrono::steady_clock::now();
+    if (t == 0 || now - last > std::chrono::seconds(1))
+    {
+        last = now;
+#ifdef _WIN32
+        MEMORYSTATUSEX ms;
+        ms.dwLength = sizeof(ms);
+        if (GlobalMemoryStatusEx(&ms)) { t = ms.ullTotalPhys >> 20; f = ms.ullAvailPhys >> 20; }
+#else
+        if (FILE* fp = fopen("/proc/meminfo", "r"))
+        {
+            char line[256];
+            unsigned long long kb;
+            while (fgets(line, sizeof(line), fp))
+            {
+                if (sscanf(line, "MemTotal: %llu kB", &kb) == 1) t = kb >> 10;
+                else if (sscanf(line, "MemAvailable: %llu kB", &kb) == 1) f = kb >> 10;
+            }
+            fclose(fp);
+        }
+#endif
+    }
+    totalMB = t;
+    freeMB = f;
+}
+
 void DialogEvent::DrawAppSetting(float s)
 {
+    // a percentage field (2 digits, 20-80) with "%" after it; typing is checked like Output quality
+    auto PercentField = [this](const char* id, char* buf, float x, float y) {
+        At(x, y, 14);
+        ImGui::SetNextItemWidth(W(26));
+        {
+            CenterText ct(buf, W(26));
+            ImGui::InputText(id, buf, 3, ImGuiInputTextFlags_CallbackCharFilter | ImGuiInputTextFlags_CallbackEdit, &DialogEvent::PercentCallback, this);
+        }
+        RowLabel("%", x + 29, y, x + 40);
+    };
     // drawn inside its own os window (DrawModal); child with the dialog-unit coordinate system of IDD_DIALOG_APP_SETTING
-    ImGui::BeginChild("##appsetbody", ImVec2(W(309), H(284)), 0, ImGuiWindowFlags_NoScrollbar);
+    ImGui::BeginChild("##appsetbody", ImVec2(W(309), H(239)), 0, ImGuiWindowFlags_NoScrollbar);
 
-    GroupBox(L("IDC_STATIC_AUTO_START"), 7, 7, 144, 62);
-    Radio(L("IDC_RADIO_AUTO_START_NONE"), "as0", &app.autoMode, 0, 14, 19);
-    Radio(L("IDC_RADIO_AUTO_START_ONE"), "as1", &app.autoMode, 1, 14, 34);
-    {
-        std::string t = L("IDC_RADIO_AUTO_START_MULTI");
-        Radio(t, "as2", &app.autoMode, 2, 14, 49);
-    }
-
-    GroupBox(L("IDC_STATIC_PROCESSOR"), 158, 7, 144, 38);
-    Radio(L2("IDC_RADIO_MODE_VULKAN", "GPU (Vulkan)"), "pgpu", &app.processor, 0, 165, 19);
-    Radio(L("IDC_RADIO_MODE_CPU"), "pcpu", &app.processor, 1, 165, 32);
-
-    Check(L("IDC_CHECK_OUTPUT_NO_OVERWRITE"), "noow", &app.noOverwrite, 14, 76, true, 152); // same row as "Exit when finished"
-
-    GroupBox(L("IDC_STATIC_ARG_START"), 158, 51, 144, 38); // ends at 89, above the GPU row
-    Check(L("IDC_CHECK_ARG_START_AUTO"), "argauto", &app.argStartAuto, 165, 63);
-    Check(L("IDC_CHECK_ARG_START_SUCCESS_FINISH"), "argfin", &app.argStartFinish, 165, 76);
 
     // rows of 14 with a gap of 5; label column 7-75 (vertically centred on the field), fields from 77
-    RowLabel(L("IDC_STATIC_USE_GPU_NO"), 7, 97, 75);
-    {
-        std::vector<std::string> items;
-        items.push_back(L2("DeviceAuto", "Auto (GPU, CPU if no GPU)"));
-        for (const auto& g : gpus) items.push_back(Format("%d: %s", g.index, g.name.c_str()));
-        std::vector<std::string> shortItems = items;
-        for (size_t i = 0; i < gpus.size(); i++) shortItems[i + 1] = Format("GPU %d", gpus[i].index);
-        if (gpuState == 1)
-        {
-            items[0] += " - " + L2("MessageDetecting", "detecting...");
-            shortItems[0] = L2("MessageDetecting", "detecting...");
-        }
-        Combo("##gpuno", &app.gpuCombo, items, 77, 97, 225, app.processor == 0, nullptr, &shortItems);
-    }
 
-    RowLabel(L("IDC_STATIC_INPUT_DIR_FIX"), 7, 116, 75);
-    Edit("##indirfix", app.inputDirFix, sizeof(app.inputDirFix), 77, 116, 201, 14);
-    if (InlineButton("...", "indirfixbtn", 282, 116, 20))
+    // Input and Output Settings: no overwrite, then the custom folders (off by default = the main window's paths;
+    // on with a field left empty = the main window's path for that one), greyed out and without hover while off
+    GroupBox(T("Input and Output Settings"), 7, 66, 295, 84);
+    Check(L("IDC_CHECK_OUTPUT_NO_OVERWRITE"), "noow", &app.noOverwrite, 14, 81, true, 298);
+    Check(T("Enable custom Input and Output folder paths"), "customdirs", &app.customDirs, 14, 95, true, 298);
+    ImGui::BeginDisabled(!app.customDirs);
+    RowLabel(L("IDC_STATIC_INPUT_DIR_FIX"), 14, 111, 77);
+    Edit("##indirfix", app.inputDirFix, sizeof(app.inputDirFix), 79, 111, 195, 14);
+    if (InlineButton("...", "indirfixbtn", 278, 111, 20))
     {
         StartPicker(3, true, L("IDC_STATIC_INPUT_DIR_FIX"), app.inputDirFix);
     }
-    RowLabel(L("IDC_STATIC_OUTPUT_DIR_FIX"), 7, 135, 75);
-    Edit("##outdirfix", app.outputDirFix, sizeof(app.outputDirFix), 77, 135, 201, 14);
-    if (InlineButton("...", "outdirfixbtn", 282, 135, 20))
+    RowLabel(L("IDC_STATIC_OUTPUT_DIR_FIX"), 14, 130, 77);
+    Edit("##outdirfix", app.outputDirFix, sizeof(app.outputDirFix), 79, 130, 195, 14);
+    if (InlineButton("...", "outdirfixbtn", 278, 130, 20))
     {
         StartPicker(4, true, L("IDC_STATIC_OUTPUT_DIR_FIX"), app.outputDirFix);
     }
+    ImGui::EndDisabled();
 
-    // ncnn-vulkan extras
-    GroupBox(L2("IDC_STATIC_NCNN_ADVANCED", "ncnn-vulkan (advanced)"), 7, 156, 295, 104);
-    RowLabel(L2("IDC_STATIC_MULTI_GPU", "Multi GPU ids"), 14, 170, 118);
-    Edit("##gpuids", app.gpuIds, sizeof(app.gpuIds), 120, 170, 70, 14);
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", L2("TipMultiGpu", "e.g. 0,1 to use two GPUs at once, -1 = CPU. Empty = use the device above").c_str());
-    RowLabel(L2("IDC_STATIC_TILE_PER_GPU", "Split size per GPU"), 14, 189, 118);
-    Edit("##tiles", app.tiles, sizeof(app.tiles), 120, 189, 70, 14);
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", L2("TipTilePerGpu", "one value per GPU id, e.g. 0,200. Empty = main window split size").c_str());
-    RowLabel(L2("IDC_STATIC_PROC_PER_GPU", "Thread(s) per GPU"), 14, 208, 118);
-    Edit("##procs", app.procs, sizeof(app.procs), 120, 208, 70, 14);
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", L2("TipProcPerGpu", "one value per GPU id, e.g. 2,2. Empty = Thread(s) of the main window").c_str());
-
-    RowLabel(L2("IDC_STATIC_LOAD_THREADS", "Load threads"), 198, 170, 253);
-    At(255, 170, 14);
-    ImGui::SetNextItemWidth(W(40));
-    ImGui::InputInt("##loadthr", &app.loadThreads, 0, 0);
-    RowLabel(L2("IDC_STATIC_SAVE_THREADS", "Save threads"), 198, 189, 253);
-    At(255, 189, 14);
-    ImGui::SetNextItemWidth(W(40));
-    ImGui::InputInt("##savethr", &app.saveThreads, 0, 0);
-    app.loadThreads = std::max(1, std::min(64, app.loadThreads));
-    app.saveThreads = std::max(1, std::min(64, app.saveThreads));
-
-    Check(L2("IDC_CHECK_VERBOSE_LOG", "Show repicturer-cli output in the log"), "verbose", &app.verbose, 14, 228);
-
-    RowLabel(L2("IDC_STATIC_SYNCGAP", "Real-CUGAN sync gap"), 14, 241, 118);
+    // Performance: the memory limits (reading / saving threads are fixed: 1 / 2)
+    // Models Settings: options of one engine each, in a small box per engine
+    GroupBox(L2("IDC_STATIC_MODEL_SETTINGS", "Models Settings"), 7, 7, 295, 49);
+    GroupBox("Real-CUGAN", 14, 20, 281, 30);
+    RowLabel(L2("IDC_STATIC_SYNCGAP", "Sync gap"), 21, 32, 115);
     {
         std::vector<std::string> items = {
             L2("SyncGap0", "0 - off (fastest, tiles may differ in tone)"),
             L2("SyncGap1", "1 - accurate (slowest)"),
             L2("SyncGap2", "2 - rough"),
             L2("SyncGap3", "3 - very rough (default)")};
-        Combo("##syncgap", &app.syncgap, items, 120, 241, 175);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("%s", L2("TipSyncGap", "Real-CUGAN SE / Pro: how the colour statistics are shared between tiles of a big image").c_str());
+        Combo("##syncgap", &app.syncgap, items, 120, 32, 168);
+        if (ImGui::IsItemHovered() || HoverRect(21, 32, 94, 14))
+            TooltipText("%s", L2("TipSyncGap", "Real-CUGAN only. A big picture is converted in pieces (the Split size); without this, neighbouring pieces "
+                "can differ slightly in tone (faint squares, e.g. in a sky). Sync gap gives all pieces the same colour measurements:\n"
+                "0 - off: fastest, pieces may differ.\n"
+                "1 - accurate: the best match, the slowest.\n"
+                "2 - rough: faster.\n"
+                "3 - very rough (default): fast and already seamless - keep this.").c_str());
     }
 
-    bool ok = Button(L2("OK", "OK"), "appok", 198, 267, 50, 14);
-    bool cancel = Button(L2("Cancel", "Cancel"), "appcancel", 252, 267, 50, 14);
+    GroupBox(L2("IDC_STATIC_NCNN_ADVANCED", "Performance"), 7, 160, 295, 52);
+
+    // rows 1 / 2: memory, like Photoshop's Memory Usage: what there is, what is free, the share RePicturer may use
+    // (a share of the FREE memory when a conversion starts, not of the total)
+    {
+        // the gpu chosen above (the first one for Auto)
+        const GpuDevice* gd = nullptr;
+        const int dev = DeviceComboIndex(); // the Processing Unit of the main window
+        if (dev > 0 && dev <= (int)gpus.size()) gd = &gpus[dev - 1];
+        else if (!gpus.empty()) gd = &gpus[0];
+        std::string info;
+        if (dev > (int)gpus.size()) info = T("VRAM: not used (CPU)");
+        else if (gpuState == 1) info = T("VRAM: detecting...");
+        else if (!gd) info = T("VRAM: no GPU found");
+        else if (gd->totalMB > 0) info = Format(T("VRAM: %d MB total, %d MB free").c_str(), gd->totalMB, gd->heapMB);
+        else info = Format(T("VRAM: %d MB free").c_str(), gd->heapMB);
+        RowLabel(info, 14, 174, 166);
+        RightLabel(T("Let RePicturer use"), 168, 174, 252);
+        PercentField("##vram", app.vramText, 255, 174);
+        if (ImGui::IsItemHovered() || HoverRect(14, 174, 281, 14))
+            TooltipText("%s", L2("TipVramLimit", "The most GPU memory (VRAM) RePicturer may use, as a share of the memory that is free\n"
+                "when a conversion starts - not of the whole card. Example: 16 GB card, 12 GB free, 60 % = 7.2 GB.\n"
+                "20 - 60 % is a safe range: it leaves room for Windows, the browser and games, and avoids\n"
+                "out-of-memory errors and crashes. Go above 60 % only when nothing else uses the GPU.\n"
+                "An image that runs out is retried up to 3 times with a smaller Split size. Default 60 %.").c_str());
+    }
+    {
+        uint64_t totalMB = 0, freeMB = 0;
+        SystemRam(totalMB, freeMB);
+        RowLabel(Format(T("RAM: %d MB total, %d MB free").c_str(), (int)totalMB, (int)freeMB), 14, 193, 166);
+        RightLabel(T("Let RePicturer use"), 168, 193, 252);
+        PercentField("##ram", app.ramText, 255, 193);
+        if (ImGui::IsItemHovered() || HoverRect(14, 193, 281, 14))
+            TooltipText("%s", L2("TipRamLimit", "The most RAM the pictures in progress may use, as a share of the RAM that is free\n"
+                "when a conversion starts - not of all RAM. Example: 32 GB RAM, 20 GB free, 60 % = 12 GB.\n"
+                "20 - 60 % is a safe range: Windows and your other programs keep enough memory, and the PC\n"
+                "does not slow down or freeze. Go above 60 % only when nothing else is running.\n"
+                "When the limit is reached the next pictures wait; a single picture bigger than the limit fails. Default 60 %.").c_str());
+    }
+
+
+    if (percentWarn)
+    {
+        percentWarn = false;
+        ShowPercentWarning();
+    }
+
+    bool ok = Button(L2("OK", "OK"), "appok", 198, 222, 50, 14);
+    bool cancel = Button(L2("Cancel", "Cancel"), "appcancel", 252, 222, 50, 14);
     ImGui::EndChild();
 
-    if (ok)
+    if (ok && (!PercentValid(app.vramText) || !PercentValid(app.ramText)))
     {
-        tAutoMode = app.autoMode == 1 ? "one" : app.autoMode == 2 ? "multi" : "none";
-        process = app.processor == 1 ? "cpu" : "gpu";
-        isArgStartAuto = app.argStartAuto;
-        isArgStartSuccessFinish = app.argStartFinish;
+        ShowPercentWarning();
+        ok = false;
+        cancel = false; // stays open to correct it
+    }
+    else if (ok)
+    {
+        app.vramPercent = atoi(app.vramText);
+        app.ramPercent = atoi(app.ramText);
         isOutputNoOverwrite = app.noOverwrite;
         tInputDirFix = app.inputDirFix;
         tOutputDirFix = app.outputDirFix;
-        gpu_no = app.gpuCombo <= 0 || app.gpuCombo > (int)gpus.size() ? -1 : gpus[app.gpuCombo - 1].index;
-        gpuIdsMulti = Trim(app.gpuIds);
-        tileMulti = Trim(app.tiles);
-        procMulti = Trim(app.procs);
-        loadThreads = app.loadThreads;
-        saveThreads = app.saveThreads;
-        verboseLog = app.verbose;
+        useCustomDirs = app.customDirs;
         syncgap = app.syncgap;
-        if (!tOutputDirFix.empty() && PathExists(tOutputDirFix))
+        vramPercent = app.vramPercent;
+        ramPercent = app.ramPercent;
+        if (useCustomDirs && !tOutputDirFix.empty() && PathExists(tOutputDirFix))
             output_dir = tOutputDirFix;
         SaveIni();
     }
@@ -3266,7 +3190,7 @@ namespace
         {"Weak GPU / huge batches / speed first",
          "waifu2x UpRGB (2D), Real-ESRGAN General or LSDIR Compact (photo)",
          "Real-ESRGAN animevideo v3, waifu2x UpPhoto",
-         "the heavy 4x models (Real-ESRGAN x4plus, RealESRNet x4plus, Nomos8kSC, NMKD), TTA mode"},
+         "the heavy 4x models (Real-ESRGAN x4plus, RealESRNet x4plus, Nomos8kSC, NMKD)"},
     };
 
     struct ModelDoc { const char* title; const char* engine; const char* scales; const char* denoise; const char* speed; const char* notes; };
@@ -3275,7 +3199,7 @@ namespace
          "Level 0 = conservative (2x/3x/4x), Level 1 and 2 (2x only), Level 3 (2x/3x/4x); Scale only = no denoise",
          "medium (about like waifu2x CUnet)",
          "Best general model for 2D art: sharper and cleaner than waifu2x CUnet while keeping the drawing style. "
-         "The 'Real-CUGAN sync gap' option (App Setting) keeps the colour statistics of big images consistent between tiles."},
+         "The 'Real-CUGAN sync gap' option (Preferences) keeps the colour statistics of big images consistent between tiles."},
         {"Real-CUGAN Pro", "Real-CUGAN (Bilibili, 2022)", "2x, 3x",
          "Level 0 = conservative, Level 3 = denoise; Scale only = no denoise (no Level 1/2)",
          "medium",
@@ -3353,7 +3277,7 @@ namespace
 
     const char* const g_notes[] = {
         "GPU: every model runs on any GPU with Vulkan - NVIDIA GTX 600 series and newer (e.g. GTX 1050), AMD GCN and newer (e.g. RX 470/570), "
-        "Intel HD 500 and newer, Iris Xe and Arc. No CUDA is needed. If 'Check GPU' finds nothing, update the graphics driver.",
+        "Intel HD 500 and newer, Iris Xe and Arc. No CUDA is needed. If 'Re-Detect GPU' finds nothing, update the graphics driver.",
         "CPU: used only when no Vulkan GPU is found (or when CPU is selected). Every model works on any x86-64 Intel / AMD CPU, "
         "but 10-100x slower than a GPU; the heavy 4x models (Real-ESRGAN x4plus, RealESRNet x4plus, Nomos8kSC, NMKD) can take minutes per image.",
         "Heavy 4x models (Real-ESRGAN x4plus, RealESRNet x4plus, Nomos8kSC, NMKD Siax / Superscale): each GPU converts one image at a time, "
@@ -3366,7 +3290,6 @@ namespace
         "Real-ESRGAN General 0-3 = denoise strength 25-100 %; LSDIR Compact 0-3 = more and more cleanup; "
         "the other Real-ESRGAN, NMKD and Nomos8kSC models have none (restoration is built in). "
         "'Scale only' never denoises (Real-ESRGAN General: weakest; LSDIR Compact: no cleanup).",
-        "TTA mode averages 8 rotated / mirrored runs: slightly better edges, 8x slower.",
         "Transparency (alpha) is enlarged with bicubic interpolation by all engines; colour is processed by the network.",
         "AI upscalers can invent detail (textures, letters). Check the result before using it for text, documents or anything where accuracy matters.",
     };
@@ -3707,25 +3630,24 @@ void DialogEvent::DrawSpeedHelp(float s, bool& close)
     bullet("The list shows sizes that divide the picture evenly (like waifu2x-caffe) and the presets from crop_size_list.txt; "
            "any number of 32 or more can be typed.");
     bullet("The heavy 4x models (Real-ESRGAN x4plus, RealESRNet x4plus, Nomos8kSC, NMKD Siax / Superscale) need about half the split size of the others for the same memory.");
-    bullet("Real-CUGAN: with 'sync gap' 0 (App Setting) neighbouring pieces can differ slightly in tone on big images; the default 3 avoids it.");
+    bullet("Real-CUGAN: with 'sync gap' 0 (Preferences) neighbouring pieces can differ slightly in tone on big images; the default 3 avoids it.");
     bullet("CPU fallback: 400 by default, limited by the system memory instead of the GPU memory.");
 
     ImGui::Spacing();
     ImGui::SeparatorText(T("Thread(s)").c_str());
-    bullet("GPU: how many images are converted on each GPU at the same time. Loading and saving run in their own threads "
-           "(App Setting: load / save threads).");
+    bullet("GPU: how many images are converted on the GPU at the same time. Reading and saving run in their own threads "
+           "(1 for reading, 2 for saving).");
     bullet("It speeds up folders and many files: the GPU keeps working while other images are being read or written. "
            "A single image is not converted faster by more threads.");
     bullet("Every thread needs its own GPU memory. With Split size 0 the automatic size gets smaller when more threads run.");
     bullet("Recommended: 1-2 for 2-4 GB cards (e.g. GTX 1050), 2 (default) for most GPUs, 3-4 for strong GPUs with many small images. "
            "Too many = out of memory, or no gain.");
     bullet("CPU fallback: the number of CPU cores used for the network. Set it to your core count for the best CPU speed.");
-    bullet("Several GPUs: separate split sizes and thread counts per GPU can be set in App Setting (e.g. GPU ids 0,1 / threads 2,2).");
 
     ImGui::Spacing();
     ImGui::SeparatorText(T("Neither changes the quality").c_str());
     ImGui::TextWrapped("%s", T("Split size and Thread(s) only change speed and memory use. The picture comes out the same; "
-                               "quality is decided by the model, the denoise level and TTA mode.").c_str());
+                               "quality is decided by the model and the denoise level.").c_str());
     ImGui::EndChild();
 
     const float bw = 90 * s;
@@ -3787,8 +3709,6 @@ void DialogEvent::ResetToDefault()
     editScaleWidth[0] = 0;
     editScaleHeight[0] = 0;
     SetScaleWHText("");
-    checkTTA = false;
-    use_tta = false;
 
     // model / device / speed
     comboModel = 0;
@@ -3807,19 +3727,13 @@ void DialogEvent::ResetToDefault()
     batch_size = 2;
 
     // app setting
-    tAutoMode = "none";
-    isArgStartAuto = true;
-    isArgStartSuccessFinish = true;
     isOutputNoOverwrite = false;
     tInputDirFix.clear();
     tOutputDirFix.clear();
-    gpuIdsMulti.clear();
-    tileMulti.clear();
-    procMulti.clear();
-    loadThreads = 1;
-    saveThreads = 2;
-    verboseLog = false;
+    useCustomDirs = false;
     syncgap = 3;
+    vramPercent = 60;
+    ramPercent = 60;
 
     // the ui language is kept (not part of the reset); the folders the explorer remembered are forgotten
     lastBrowseIn.clear();
@@ -3831,6 +3745,5 @@ void DialogEvent::ResetToDefault()
     progressNow = progressMax = 0;
 
     FixModeForModel();
-    isNotSaveParam = false;
     SaveIni(true); // setting.ini now holds the defaults
 }

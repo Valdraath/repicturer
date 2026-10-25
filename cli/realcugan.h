@@ -14,7 +14,7 @@ class FeatureCache;
 class RealCUGAN
 {
 public:
-    RealCUGAN(int gpuid, bool tta_mode = false, int num_threads = 1);
+    RealCUGAN(int gpuid, int num_threads = 1);
     ~RealCUGAN();
 
 #if _WIN32
@@ -71,7 +71,6 @@ private:
     ncnn::Layer* bicubic_2x;
     ncnn::Layer* bicubic_3x;
     ncnn::Layer* bicubic_4x;
-    bool tta_mode;
 };
 
 #endif // REALCUGAN_H

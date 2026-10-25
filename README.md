@@ -58,7 +58,7 @@ Wayland desktop (Wayland through XWayland), OpenGL 3.0 and a **Vulkan driver**:
 * **"Permission denied"** when starting it: step 2 was skipped, run the `chmod` command.
 * **Nothing happens on double-click** in the file manager: start it from a terminal with `./RePicturer`, or use the menu
   entry from step 4.
-* **Check GPU finds no GPU:** install or update the Vulkan driver above. Without one, RePicturer still works on the CPU,
+* **Re-Detect GPU finds no GPU:** install or update the Vulkan driver above. Without one, RePicturer still works on the CPU,
   only much slower.
 
 ## Support the project
@@ -72,7 +72,7 @@ If you like the project, consider supporting me at: **[paypal.me/TheRunningRiot]
 * **Any size:** a scale rate, a target width or height, or width x height.
 * **Modes:** Denoise & Scale, Scale only, Denoise only, Scale & Auto Denoise (JPEG sources only), with denoise or detail levels.
 * **Formats:** PNG, JPG, TIF, BMP, TGA, WEBP and GIF in; 12 output formats, always written in 8 bit (the AI models work in 8 bit). Animated GIF / WebP stay animated.
-* **Batch:** files and folders (with drag & drop), multi-GPU, no-overwrite, and a command line.
+* **Batch:** a whole folder, sub folders included (with drag & drop), no-overwrite, and a command line (which can also use several GPUs).
 * **10 languages:** English, Chinese (Traditional / Simplified), Japanese, Korean, Portuguese (Brazil), Russian, Spanish, Ukrainian, Vietnamese.
 
 The converter behind the GUI (`repicturer-cli`, based on waifu2x-ncnn-vulkan) is ncnn rebuilt from source with the waifu2x-caffe features added, so every engine supports:
@@ -173,29 +173,28 @@ The outdated waifu2x-caffe vgg_7 models (RGB, Photo, Y, ukbench) are no longer s
 
   At startup ncnn checks which fp16/int8 features each device supports. The split (tile) size is chosen automatically from free video memory, so 2 GB cards work.
 * **CPU:** used **only as a fallback** when no Vulkan GPU exists (or when you select it). All three engines work on any x86-64 Intel or AMD CPU, with SSE2/AVX/AVX2/AVX-512 chosen at runtime. It is 10-100x slower than a GPU.
-* **Driver:** if *Check GPU* finds nothing, update the graphics driver. On Linux, install the Mesa Vulkan drivers (`mesa-vulkan-drivers`) or the NVIDIA driver, plus `libvulkan1`.
+* **Driver:** if *Re-Detect GPU* finds nothing, update the graphics driver. On Linux, install the Mesa Vulkan drivers (`mesa-vulkan-drivers`) or the NVIDIA driver, plus `libvulkan1`.
 
 ## The GUI (everything waifu2x-caffe-gui has, plus ncnn options)
 
-* **Input/output:** input file, folder or multiple files, with drag & drop. **Browse** opens the program's own dark file explorer (it remembers the last folder), **Reset to Default** clears the paths and returns every setting except the language to the first-start state, after a confirmation, and the output name is filled in automatically (`name(RealCUGAN-SE)(noise_scale)(Level0)(x2.00).png`).
+* **Input/output:** one image or one folder (its sub folders too), with drag & drop. **Browse** opens the program's own dark file explorer (it remembers the last folder), **Reset to Default** clears the paths and returns every setting except the language to the first-start state, after a confirmation, and the output name is filled in automatically (`name(RealCUGAN-SE)(noise_scale)(Level0)(x2.00).png`).
 * **Formats:** input PNG, JPG, JPEG, TIF, TIFF, BMP, TGA, WEBP and GIF (fixed). Output .png .bmp .jpg .jp2 .sr .tif .hdr .exr .ppm .webp .tga .gif, with quality (webp quality 101 = lossless). The output is always 8 bit, because the AI models work in 8 bit; 16-bit source files are read and converted.
 * **Animated GIF / WebP:** every frame is converted with the same model and settings, and the result stays animated, keeping frame timing and loop count. Output .gif or .webp keeps that format, so GIF can become animated WebP and vice versa. Any other output format saves the animation in its source format (GIF -> .gif, WebP -> .webp), with a note in the log. GIF output uses an optimized 256-colour palette per frame with transparency. The progress bar shows the frame being converted.
 * **Modes:** Denoise & Scale, Scale only, Denoise only, and Scale & Auto Denoise (denoises only JPEG sources, detected from the file content), with denoise levels. Models whose cleanup is built in and cannot be turned off (Real-ESRGAN x4plus / x4plus anime / animevideo v3, RealESRNet, Nomos8kSC, NMKD) only allow **Scale only**, selected automatically; at 1.00x they clean up the image at its original size.
 * **Scale:** `<Scale Rate>` (digits, up to 2 decimals), `<Width>`, `<Height>` (whole numbers) or `<Width>x<Height>` (e.g. 1920x1080). Each box only accepts its own format; anything else is blocked with a warning.
-* **Processing:** TTA mode. Split size (0 = auto) and Thread(s) (replaces caffe's batch size), each with a hover tip and a **?** guide.
-* **Device:** a Device box (Auto / each GPU / CPU) and a **Check GPU** button.
-* **App Setting:** auto start, processor, boot with arguments, no overwrite, GPU, fixed folders. Also multi-GPU (`0,1`) with a split size and threads per GPU, load/save threads, the Real-CUGAN sync gap, and showing the converter log.
+* **Processing:** Split size (0 = auto) and Thread(s) (1-32, replaces caffe's batch size), each with a hover tip and a **?** guide.
+* **GPU memory limit** (Preferences): RePicturer uses at most a share of the GPU memory that is free when a conversion starts
+  (20-80 %, default 60 %). An image that runs out of GPU memory is retried up to 3 times with a smaller Split size instead of
+  being saved incomplete; if it still fails, the conversion stops.
+* **RAM limit** (Preferences): the pictures in progress use at most a share of the RAM that is free when a conversion starts
+  (20-80 %, default 60 %); when it is reached the next pictures wait.
+* **Processing Unit:** Auto / each GPU / CPU (the GPU runs on Vulkan, the CPU works without it) and a **Re-Detect GPU** button.
+* **Preferences:** no overwrite and custom input and output folders (off by default: the main window's paths are used). Models Settings: the Real-CUGAN sync gap. Performance: the GPU memory and RAM limits.
 * **Other:** 10 UI languages (English, Chinese Traditional / Simplified, Japanese, Korean, Portuguese (Brazil), Russian, Spanish, Ukrainian, Vietnamese), progress bar, time left, log, and `setting.ini` next to the program.
 * **Window:** resizable and maximizable. The content scales up with the window (fonts, boxes, buttons) up to a 1360 px wide column, centred horizontally and pinned to the top. The log grows up to twice its height when there is room. The original size is the minimum.
-* **Pass report:** the log shows which networks really ran for the first image (every image with the verbose log), e.g. `noise2_scale2.0x_model (x2) -> scale2.0x_model (x2) -> resize 800x600 to 2560x1920`. This shows that Denoise & Scale really did both.
-* **Command line**, same as waifu2x-caffe-gui:
-
-  ```
-  RePicturer [files...] -o out -m mode -n level -s rate -w width -h height -e ext -q quality -d depth
-                        -c split -b threads --gpu id -t 0/1 -y model --auto_start 0/1 --auto_exit 0/1 --no_overwrite 0/1 -j l:p:s
-  ```
-
-  `-y` takes a model type such as `realcugan-se`, `realesrgan-x4plus` or `cunet`.
+* **Pass report:** the log shows which networks really ran for every image, e.g. `noise2_scale2.0x_model (x2) -> scale2.0x_model (x2) -> resize 800x600 to 2560x1920`. This shows that Denoise & Scale really did both.
+* **Command line:** the window takes no command-line options. For scripts and batch work, run the converter
+  `repicturer-cli` in a terminal (Command Prompt, PowerShell or a Linux shell); `repicturer-cli -h` lists its options.
 
 ## How any scale works
 

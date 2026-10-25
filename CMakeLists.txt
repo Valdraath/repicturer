@@ -92,10 +92,8 @@ if(W2X_BUILD_CLI)
     endmacro()
     waifu2x_add_shader(waifu2x_preproc.comp)
     waifu2x_add_shader(waifu2x_postproc.comp)
-    waifu2x_add_shader(waifu2x_preproc_tta.comp)
-    waifu2x_add_shader(waifu2x_postproc_tta.comp)
-    foreach(s realcugan_preproc realcugan_postproc realcugan_4x_postproc realcugan_preproc_tta realcugan_postproc_tta realcugan_4x_postproc_tta
-            realesrgan_preproc realesrgan_postproc realesrgan_preproc_tta realesrgan_postproc_tta)
+    foreach(s realcugan_preproc realcugan_postproc realcugan_4x_postproc
+            realesrgan_preproc realesrgan_postproc)
         waifu2x_add_shader(${s}.comp)
     endforeach()
     add_custom_target(generate-spirv DEPENDS ${SHADER_SPV_HEX_FILES})

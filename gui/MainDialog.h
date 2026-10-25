@@ -9,7 +9,7 @@
 // the name the os shows (window title, taskbar, task manager, x11 WM_CLASS)
 #define APP_NAME "RePicturer"
 #define APP_NAME_W L"RePicturer"
-#define APP_VERSION_NUM "1.3"
+#define APP_VERSION_NUM "2.0"
 #define APP_VERSION "v" APP_VERSION_NUM
 #define APP_TITLE APP_NAME " " APP_VERSION   // title bar text
 
@@ -70,7 +70,8 @@ struct GpuDevice
     int index;
     std::string name;
     std::string type;
-    int heapMB;
+    int heapMB;      // free now
+    int totalMB = 0; // the card's vram
 };
 
 class DialogEvent
@@ -158,7 +159,6 @@ private:
     std::string process; // "gpu" / "cpu"
     std::string outputExt;
     std::string inputFileExt;
-    bool use_tta;
     int output_quality; // -1 = none
     int crop_size;
     int batch_size;     // ncnn: processing threads per gpu
@@ -174,25 +174,20 @@ private:
     int modelType;      // index into models
     std::string LangName;
 
-    std::string tAutoMode;
-    bool isArgStartAuto;
-    bool isArgStartSuccessFinish;
     bool isOutputNoOverwrite;
+    bool useCustomDirs;      // Preferences: the custom input / output folders are used (off = the main window's paths)
     std::string tInputDirFix;
     std::string tOutputDirFix;
     std::string lastBrowseIn, lastBrowseOut; // last folders of the input / output explorer
-    bool isNotSaveParam;
     bool isSetInitCrop;
-    bool isCommandLineStart;
 
     // ncnn specific settings
-    std::string gpuIdsMulti;   // "0,1" overrides gpu_no
-    std::string tileMulti;     // "0,0"
-    std::string procMulti;     // "2,2"
-    int loadThreads;
-    int saveThreads;
-    bool verboseLog;
+    // reading / saving threads of the converter: fixed (1 / 2 suits every GPU and the CPU), not a setting
+    static const int loadThreads = 1;
+    static const int saveThreads = 2;
     int syncgap;           // Real-CUGAN sync gap mode 0-3
+    int vramPercent;       // gpu memory limit: % of the memory that is free when a conversion starts (10-80)
+    int ramPercent;        // RAM limit: % of the RAM that is free when a conversion starts (10-80)
 
     // ------------------------------------------------ ui state (the win32 controls)
     char editInput[4096] = {0};
@@ -219,7 +214,6 @@ private:
     int radioScale = 0;
     int outExtIndex = 0;
     int comboModel = 0;
-    bool checkTTA = false;
     int comboLang = 0;
     std::vector<std::string> cropItems;
     bool qualityEnabled = false;
@@ -248,25 +242,25 @@ private:
     bool appSettingOpen = false;
     struct AppSettingState
     {
-        int autoMode = 0;
-        int processor = 0;
-        bool argStartAuto = true;
-        bool argStartFinish = true;
         bool noOverwrite = false;
+        bool customDirs = false;
         char inputDirFix[2048] = {0};
         char outputDirFix[2048] = {0};
-        int gpuCombo = 0;
-        char gpuIds[256] = {0};
-        char tiles[256] = {0};
-        char procs[256] = {0};
-        int loadThreads = 1;
-        int saveThreads = 2;
-        bool verbose = false;
         int syncgap = 3;
+        int vramPercent = 60;
+        int ramPercent = 60;
+        char vramText[3] = "60"; // the fields: 2 digits, 20-80
+        char ramText[3] = "60";
+        std::string vramLast = "60", ramLast = "60"; // last accepted text (an invalid key is undone)
     } app;
 
     // model guide popup ("?" next to the model list)
     bool modelHelpRequest = false;
+
+    // the VRAM / RAM share fields of Preferences: invalid input is undone and warned about, like Output quality
+    bool percentWarn = false;
+    static int PercentCallback(ImGuiInputTextCallbackData* data);
+    void ShowPercentWarning();
 
     // drop targets (screen rects of the edits)
     ImVec2 inputRectMin, inputRectMax, outputRectMin, outputRectMax;
@@ -292,7 +286,7 @@ private:
     };
     enum
     {
-        EvTotal, EvReady, EvDevice, EvProgress, EvFail, EvSkip, EvLog, EvFailCreateDir, EvFatal, EvEnd, EvPlan, EvAnim, EvFrame
+        EvTotal, EvReady, EvDevice, EvProgress, EvFail, EvSkip, EvLog, EvFailCreateDir, EvFatal, EvEnd, EvPlan, EvAnim, EvFrame, EvMemory
     };
     std::thread processThread;
     std::atomic<bool> cancelFlag;
@@ -343,7 +337,6 @@ private:
     void ResetToDefault();
     void DrawResetConfirm(float s);
     void AppSetting();
-    void ParseCommandLine(int argc, char** argv);
 
     // ------------------------------------------------ helpers
     void MessageBox(const std::string& text, const std::string& title, int icon);

@@ -260,6 +260,14 @@ public:
     int refcount;
 };
 
+// RePicturer: gpu memory limit and allocation failure reporting
+// limit in bytes of device local memory one gpu may hold (0 = no limit), counted over every VkAllocator
+NCNN_EXPORT void set_vram_limit(int device_index, size_t bytes);
+// device local bytes currently allocated on a gpu
+NCNN_EXPORT size_t get_vram_used(int device_index);
+// allocations that failed (out of memory or over the limit) on the calling thread since the last call; resets the count
+NCNN_EXPORT int take_vk_alloc_failures();
+
 class NCNN_EXPORT VkAllocator
 {
 public:
