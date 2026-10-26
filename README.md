@@ -70,7 +70,7 @@ If you like the project, consider supporting me at: **[paypal.me/TheRunningRiot]
 * **16 models, 3 engines:** waifu2x, Real-CUGAN and Real-ESRGAN, plus the community photo models NMKD Siax / Superscale,
   Nomos8kSC and LSDIR Compact. The **?** button explains which model to use for which picture.
 * **Any size:** a scale rate, a target width or height, or width x height.
-* **Modes:** Denoise & Scale, Scale only, Denoise only, Scale & Auto Denoise (JPEG sources only), with denoise or detail levels.
+* **Modes:** Denoise & Scale, Scale only, Denoise only, with denoise or detail levels.
 * **Formats:** PNG, JPG, TIF, BMP, TGA, WEBP and GIF in; 12 output formats, always written in 8 bit (the AI models work in 8 bit). Animated GIF / WebP stay animated.
 * **Batch:** a whole folder, sub folders included (with drag & drop), no-overwrite, and a command line (which can also use several GPUs).
 * **10 languages:** English, Chinese (Traditional / Simplified), Japanese, Korean, Portuguese (Brazil), Russian, Spanish, Ukrainian, Vietnamese.
@@ -180,7 +180,7 @@ The outdated waifu2x-caffe vgg_7 models (RGB, Photo, Y, ukbench) are no longer s
 * **Input/output:** one image or one folder (its sub folders too), with drag & drop. **Browse** opens the program's own dark file explorer (it remembers the last folder), **Reset to Default** clears the paths and returns every setting except the language to the first-start state, after a confirmation, and the output name is filled in automatically (`name(RealCUGAN-SE)(noise_scale)(Level0)(x2.00).png`).
 * **Formats:** input PNG, JPG, JPEG, TIF, TIFF, BMP, TGA, WEBP and GIF (fixed). Output .png .bmp .jpg .jp2 .sr .tif .hdr .exr .ppm .webp .tga .gif, with quality (webp quality 101 = lossless). The output is always 8 bit, because the AI models work in 8 bit; 16-bit source files are read and converted.
 * **Animated GIF / WebP:** every frame is converted with the same model and settings, and the result stays animated, keeping frame timing and loop count. Output .gif or .webp keeps that format, so GIF can become animated WebP and vice versa. Any other output format saves the animation in its source format (GIF -> .gif, WebP -> .webp), with a note in the log. GIF output uses an optimized 256-colour palette per frame with transparency. The progress bar shows the frame being converted.
-* **Modes:** Denoise & Scale, Scale only, Denoise only, and Scale & Auto Denoise (denoises only JPEG sources, detected from the file content), with denoise levels. Models whose cleanup is built in and cannot be turned off (Real-ESRGAN x4plus / x4plus anime / animevideo v3, RealESRNet, Nomos8kSC, NMKD) only allow **Scale only**, selected automatically; at 1.00x they clean up the image at its original size.
+* **Modes:** Denoise & Scale, Scale only and Denoise only, with denoise levels. Models whose cleanup is built in and cannot be turned off (Real-ESRGAN x4plus / x4plus anime / animevideo v3, RealESRNet, Nomos8kSC, NMKD) only allow **Scale only**, selected automatically; at 1.00x they clean up the image at its original size.
 * **Scale:** `<Scale Rate>` (digits, up to 2 decimals), `<Width>`, `<Height>` (whole numbers) or `<Width>x<Height>` (e.g. 1920x1080). Each box only accepts its own format; anything else is blocked with a warning.
 * **Processing:** Split size (0 = auto) and Thread(s) (1-32, replaces caffe's batch size), each with a hover tip and a **?** guide.
 * **GPU memory limit** (Preferences): RePicturer uses at most a share of the GPU memory that is free when a conversion starts
@@ -205,7 +205,7 @@ The outdated waifu2x-caffe vgg_7 models (RGB, Photo, Y, ukbench) are no longer s
 ## Converter command line
 
 ```
-repicturer-cli -i in -o out [-m model-folder] [-n level] [-s rate | -W width | -H height] [-M noise|scale|noise_scale|auto_scale]
+repicturer-cli -i in -o out [-m model-folder] [-n level] [-s rate | -W width | -H height] [-M noise|scale|noise_scale]
                     [-f format] [-q quality] [-d 8|16|32] [-t tile] [-g gpu(s)] [-j l:p:s] [-x] [-c syncgap]
                     [-l png:jpg] [-r] [-k] [-L list.txt] [--list-gpu] [--progress] [-v]
 ```

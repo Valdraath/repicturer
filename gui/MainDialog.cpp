@@ -397,17 +397,16 @@ std::string DialogEvent::AddName() const
     case eModeNoise: addstr += "noise"; break;
     case eModeScale: addstr += "scale"; break;
     case eModeNoiseScale: addstr += "noise_scale"; break;
-    case eModeAutoScale: addstr += "auto_scale"; break;
     }
     addstr += ")";
 
     const bool detailLevels = modelType >= 0 && modelType < (int)models.size() && models[modelType].HasDetailLevels();
     if (detailLevels)
         addstr += "(Detail" + std::to_string(noise_level) + ")";
-    else if (mode == eModeNoise || mode == eModeNoiseScale || mode == eModeAutoScale)
+    else if (mode == eModeNoise || mode == eModeNoiseScale)
         addstr += "(Level" + std::to_string(noise_level) + ")";
 
-    if (mode == eModeScale || mode == eModeNoiseScale || mode == eModeAutoScale)
+    if (mode == eModeScale || mode == eModeNoiseScale)
     {
         if (scaleType == eScaleTypeRatio)
             addstr += "(x" + Format("%.2f", scale_ratio) + ")";
@@ -437,8 +436,7 @@ bool DialogEvent::SyncMember(const bool NotSyncCropSize, const bool silent)
     {
     case 2: mode = eModeNoise; modeStr = "noise"; break;
     case 1: mode = eModeScale; modeStr = "scale"; break;
-    case 0: mode = eModeNoiseScale; modeStr = "noise_scale"; break;
-    default: mode = eModeAutoScale; modeStr = "auto_scale"; break;
+    default: mode = eModeNoiseScale; modeStr = "noise_scale"; break;
     }
 
     noise_level = std::min(3, std::max(0, radioNoise));
@@ -1680,7 +1678,7 @@ bool DialogEvent::CheckSettingFile(bool& missing) const
             for (int i = 0; i < g_output_format_count; i++) if (v == std::string(".") + g_output_formats[i].ext) return true;
             return false;
         }},
-        {"LastMode", [&](const std::string& v) { return oneOf(v, {"noise", "scale", "noise_scale", "auto_scale"}); }},
+        {"LastMode", [&](const std::string& v) { return oneOf(v, {"noise", "scale", "noise_scale", "auto_scale"}); }}, // auto_scale: older versions
         {"LastNoiseLevel", [](const std::string& v) { return IsIntIn(v, 0, 3); }},
         {"LastProcess", [&](const std::string& v) { return oneOf(v, {"gpu", "cpu"}); }},
         {"LastModelType", [this](const std::string& v) {
@@ -1869,8 +1867,7 @@ void DialogEvent::Create(int argc, char** argv)
 
     if (tmode == "noise") radioMode = 2;
     else if (tmode == "scale") radioMode = 1;
-    else if (tmode == "auto_scale") radioMode = 3;
-    else radioMode = 0;
+    else radioMode = 0; // noise_scale (also the removed auto_scale of older versions)
 
     // crop (split) size list without an input image
     isSetInitCrop = false;
@@ -2345,7 +2342,7 @@ std::string DialogEvent::TranslateDetail(const std::string& d) const
     return d;
 }
 
-// "models-cunet/noise1_scale2.0x (x2) -> resize 100x100 to 200x200 (jpeg: denoised)"
+// "models-cunet/noise1_scale2.0x (x2) -> resize 100x100 to 200x200"
 std::string DialogEvent::TranslatePlan(std::string d) const
 {
     const std::string nonet = "no network";
@@ -2610,19 +2607,15 @@ void DialogEvent::DrawMain(float s)
     };
     GroupBox(L("IDC_STATIC_TRANS_MODE"), 13, 108, 121, 76);
     bool modeChanged = false;
-    modeChanged |= Radio(L("IDC_RADIO_MODE_NOISE_SCALE"), "m0", &radioMode, 0, 21, 121, canDenoise && canMagnify && !builtIn);
+    modeChanged |= Radio(L("IDC_RADIO_MODE_NOISE_SCALE"), "m0", &radioMode, 0, 21, 124, canDenoise && canMagnify && !builtIn);
     onlyModeTip();
-    modeChanged |= Radio(L("IDC_RADIO_MODE_SCALE"), "m1", &radioMode, 1, 21, 137, canMagnify, 0, scaleOnly);
+    modeChanged |= Radio(L("IDC_RADIO_MODE_SCALE"), "m1", &radioMode, 1, 21, 143, canMagnify, 0, scaleOnly);
     onlyModeTip();
-    modeChanged |= Radio(L("IDC_RADIO_MODE_NOISE"), "m2", &radioMode, 2, 21, 153, canDenoise && !builtIn, 0, denoiseOnly);
+    modeChanged |= Radio(L("IDC_RADIO_MODE_NOISE"), "m2", &radioMode, 2, 21, 162, canDenoise && !builtIn, 0, denoiseOnly);
     if (!onlyTip.empty()) onlyModeTip();
     else if (isEsrgan && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
         TooltipText("%s", Format(L2("TipModelDenoiseOnly", "%s: the image is cleaned up at the network scale and shrunk back to the original size").c_str(), modelName.c_str()).c_str());
-    modeChanged |= Radio(L("IDC_RADIO_AUTO_SCALE"), "m3", &radioMode, 3, 21, 169, canDenoise && canMagnify && !builtIn);
-    if (!onlyTip.empty()) onlyModeTip();
-    else if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-        TooltipText("%s", L2("TipAutoScale", "Scales every image but denoises only JPEG sources (like waifu2x-caffe).\n"
-            "PNG and other images are only scaled - use \"Denoise & Scale\" to always do both.").c_str());
+
     if (modeChanged) OnModeChange();
 
     const bool isNoise = radioMode != 1;

@@ -9,7 +9,7 @@
 // the name the os shows (window title, taskbar, task manager, x11 WM_CLASS)
 #define APP_NAME "RePicturer"
 #define APP_NAME_W L"RePicturer"
-#define APP_VERSION_NUM "2.2"
+#define APP_VERSION_NUM "2.3"
 #define APP_VERSION "v" APP_VERSION_NUM
 #define APP_TITLE APP_NAME " " APP_VERSION   // title bar text
 
@@ -139,7 +139,6 @@ private:
         eModeNoise,
         eModeScale,
         eModeNoiseScale,
-        eModeAutoScale,
     };
 
     // ------------------------------------------------ caffe DialogEvent members
@@ -209,7 +208,7 @@ private:
     char editScaleWH[64] = {0};   // "<width>x<height>" (command line / setting.ini); the GUI uses editScaleWidth / Height
     char comboCrop[64] = {0};
     char comboBatch[64] = {0};
-    int radioMode = 0;   // 0 noise_scale, 1 scale, 2 noise, 3 auto_scale (dialog order)
+    int radioMode = 0;   // 0 noise_scale, 1 scale, 2 noise (dialog order)
     int radioNoise = 0;
     int radioScale = 0;
     int outExtIndex = 0;

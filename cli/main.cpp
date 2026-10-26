@@ -2,7 +2,7 @@
 //
 // enhanced command line: everything upstream waifu2x-ncnn-vulkan does, plus the waifu2x-caffe features
 //   - any scale ratio (-s 1.6), target width / height / width x height (-W / -H)
-//   - conversion modes noise / scale / noise_scale / auto_scale (denoise jpeg sources only)
+//   - conversion modes noise / scale / noise_scale
 //   - denoise-only with models that only ship noise+scale networks (2x then shrink, like caffe)
 //   - output formats png bmp jpg jp2 sr tif hdr exr ppm webp tga gif (8 bit), quality
 //   - input extension filter, recursive folders keeping the tree, file lists, no-overwrite
@@ -77,7 +77,7 @@ static void print_usage()
         "  -s, --scale_ratio r       upscale ratio, any positive number (default=2)\n"
         "  -W, --scale_width w       target width (height follows the aspect ratio unless -H is set)\n"
         "  -H, --scale_height h      target height (width follows the aspect ratio unless -W is set)\n"
-        "  -M, --mode mode           noise / scale / noise_scale / auto_scale (default: from -n and -s)\n"
+        "  -M, --mode mode           noise / scale / noise_scale (default: from -n and -s)\n"
         "  -t, --tile_size t         tile size (>=32/0=auto, default=0) can be 0,0,0 for multi-gpu\n"
         "  -m, --model_dir path      model folder (default=models-cunet); the engine follows the folder:\n"
         "                              models-cunet, models-upconv_7_*, models-upresnet10 : waifu2x\n"
@@ -116,7 +116,7 @@ enum Mode
     MODE_NOISE = 0,
     MODE_SCALE = 1,
     MODE_NOISE_SCALE = 2,
-    MODE_AUTO_SCALE = 3,
+
 };
 
 struct Options
@@ -249,7 +249,7 @@ static int parse_args(const std::vector<path_t>& args, Options& o)
             if (val == "noise") o.mode = MODE_NOISE;
             else if (val == "scale") o.mode = MODE_SCALE;
             else if (val == "noise_scale") o.mode = MODE_NOISE_SCALE;
-            else if (val == "auto_scale") o.mode = MODE_AUTO_SCALE;
+
             else { fprintf(stderr, "invalid mode argument\n"); return -1; }
         }
         else if (l == "tile_size") o.tilesize = parse_int_array(val);
@@ -455,8 +455,9 @@ static int pick_scale(double need, F avail)
 static Plan make_plan(const Options& o, int w, int h, bool is_jpeg)
 {
     Plan p;
-    const bool is_noise = o.mode == MODE_NOISE || o.mode == MODE_NOISE_SCALE || (o.mode == MODE_AUTO_SCALE && is_jpeg);
-    const bool is_scale = o.mode == MODE_SCALE || o.mode == MODE_NOISE_SCALE || o.mode == MODE_AUTO_SCALE;
+    (void)is_jpeg; // denoising no longer depends on the source format
+    const bool is_noise = o.mode == MODE_NOISE || o.mode == MODE_NOISE_SCALE;
+    const bool is_scale = o.mode == MODE_SCALE || o.mode == MODE_NOISE_SCALE;
 
     double factor = 1.0;
     if (is_scale)
@@ -1038,8 +1039,7 @@ static void proc_worker(GpuNets* g)
                 d += (s ? " -> " : "") + P(plan.nets[s].base) + " (x" + std::to_string(plan.nets[s].scale) + ")";
             if (d.empty()) d = "no network";
             d += " -> resize " + std::to_string(t.image.w) + "x" + std::to_string(t.image.h) + " to " + std::to_string(plan.outw) + "x" + std::to_string(plan.outh);
-            if (g_opt.mode == MODE_AUTO_SCALE)
-                d += t.info.is_jpeg ? " (jpeg: denoised)" : " (not jpeg: no denoise in auto mode)";
+
             if (g_opt.progress)
                 out_line(stdout, "PLAN\t" + P(t.inpath) + "\t" + d);
             else
@@ -1434,7 +1434,7 @@ static int run(const std::vector<path_t>& args)
     // validate the conversion against the model (the real plan is made per image)
     {
         const bool may_jpeg[2] = {false, true};
-        for (int k = 0; k < (o.mode == MODE_AUTO_SCALE ? 2 : 1); k++)
+        for (int k = 0; k < 1; k++)
         {
             Plan probe = make_plan(o, 1000, 1000, may_jpeg[k]);
             if (!probe.error.empty())
