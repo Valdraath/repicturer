@@ -631,7 +631,11 @@ int RealCUGAN::process_cpu(const ncnn::Mat& inimage, ncnn::Mat& outimage) const
 
                     if (channels == 4)
                     {
-                        in_alpha_tile = in.channel_range(3, 1).clone();
+                        // only the tile itself: "in" also holds the padding taken from the neighbouring tiles, copied whole
+                        // into the smaller result it overran it and crashed (rgba pictures, cpu, more than one tile)
+                        ncnn::copy_cut_border(in.channel_range(3, 1), in_alpha_tile, yi * TILE_SIZE_Y - in_tile_y0,
+                            in_tile_y1 - std::min((yi + 1) * TILE_SIZE_Y, h), xi * TILE_SIZE_X - in_tile_x0,
+                            in_tile_x1 - std::min((xi + 1) * TILE_SIZE_X, w), net.opt);
                     }
                 }
 
@@ -1917,7 +1921,11 @@ int RealCUGAN::process_cpu_se_stage0(const ncnn::Mat& inimage, const std::vector
 
                     if (channels == 4)
                     {
-                        in_alpha_tile = in.channel_range(3, 1).clone();
+                        // only the tile itself: "in" also holds the padding taken from the neighbouring tiles, copied whole
+                        // into the smaller result it overran it and crashed (rgba pictures, cpu, more than one tile)
+                        ncnn::copy_cut_border(in.channel_range(3, 1), in_alpha_tile, yi * TILE_SIZE_Y - in_tile_y0,
+                            in_tile_y1 - std::min((yi + 1) * TILE_SIZE_Y, h), xi * TILE_SIZE_X - in_tile_x0,
+                            in_tile_x1 - std::min((xi + 1) * TILE_SIZE_X, w), net.opt);
                     }
                 }
 
@@ -2045,7 +2053,11 @@ int RealCUGAN::process_cpu_se_stage2(const ncnn::Mat& inimage, const std::vector
 
                     if (channels == 4)
                     {
-                        in_alpha_tile = in.channel_range(3, 1).clone();
+                        // only the tile itself: "in" also holds the padding taken from the neighbouring tiles, copied whole
+                        // into the smaller result it overran it and crashed (rgba pictures, cpu, more than one tile)
+                        ncnn::copy_cut_border(in.channel_range(3, 1), in_alpha_tile, yi * TILE_SIZE_Y - in_tile_y0,
+                            in_tile_y1 - std::min((yi + 1) * TILE_SIZE_Y, h), xi * TILE_SIZE_X - in_tile_x0,
+                            in_tile_x1 - std::min((xi + 1) * TILE_SIZE_X, w), net.opt);
                     }
                 }
 
@@ -2332,7 +2344,11 @@ int RealCUGAN::process_cpu_se_very_rough_stage0(const ncnn::Mat& inimage, const 
 
                     if (channels == 4)
                     {
-                        in_alpha_tile = in.channel_range(3, 1).clone();
+                        // only the tile itself: "in" also holds the padding taken from the neighbouring tiles, copied whole
+                        // into the smaller result it overran it and crashed (rgba pictures, cpu, more than one tile)
+                        ncnn::copy_cut_border(in.channel_range(3, 1), in_alpha_tile, yi * TILE_SIZE_Y - in_tile_y0,
+                            in_tile_y1 - std::min((yi + 1) * TILE_SIZE_Y, h), xi * TILE_SIZE_X - in_tile_x0,
+                            in_tile_x1 - std::min((xi + 1) * TILE_SIZE_X, w), net.opt);
                     }
                 }
 
