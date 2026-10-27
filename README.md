@@ -70,9 +70,12 @@ If you like the project, consider supporting me at: **[paypal.me/TheRunningRiot]
 * **16 models, 3 engines:** waifu2x, Real-CUGAN and Real-ESRGAN, plus the community photo models NMKD Siax / Superscale,
   Nomos8kSC and LSDIR Compact. The **?** button explains which model to use for which picture.
 * **Any size:** a scale rate, a target width or height, or width x height.
-* **Modes:** Denoise & Scale, Scale only, Denoise only, with denoise or detail levels.
+* **Modes:** Denoise & Scale, Scale only and Denoise only, with denoise or detail levels.
 * **Formats:** PNG, JPG, TIF, BMP, TGA, WEBP and GIF in; 12 output formats, always written in 8 bit (the AI models work in 8 bit). Animated GIF / WebP stay animated.
-* **Batch:** a whole folder, sub folders included (with drag & drop), no-overwrite, and a command line (which can also use several GPUs).
+* **One image or a whole folder:** sub folders included, with drag & drop and an option not to overwrite existing files.
+* **Performance control:** RePicturer uses at most the share of free GPU memory (VRAM) and RAM you allow, and an image that
+  runs out of GPU memory is retried automatically with safer settings instead of being saved incomplete.
+* **GPU or CPU:** any Vulkan GPU (NVIDIA, AMD, Intel), with the CPU as a fallback.
 * **10 languages:** English, Chinese (Traditional / Simplified), Japanese, Korean, Portuguese (Brazil), Russian, Spanish, Ukrainian, Vietnamese.
 
 The converter behind the GUI (`repicturer-cli`, based on waifu2x-ncnn-vulkan) is ncnn rebuilt from source with the waifu2x-caffe features added, so every engine supports:
@@ -94,17 +97,29 @@ icon.png, install-desktop-entry.sh   (linux) application menu entry
 
 ## User interface
 
-![RePicturer main window](docs/screenshots/main-window.png)
+![RePicturer main window](docs/screenshots/main-window-v2.3.png)
 
 The interface is based on the classic **waifu2x-caffe** GUI, so its users feel at home right away: the same layout of
-input / output, conversion mode, denoise level, scale and model. It has been rebuilt from scratch with Dear ImGui and
-refined with a modern **dark theme**, sharp scalable text in every language, and a window that can be resized and
-maximized (everything scales with it). Every option has a hover tip, and the **?** buttons open short guides.
+input / output, mode, denoise level, scale and model. It has been rebuilt from scratch with Dear ImGui and refined with a
+modern **dark theme**, sharp scalable text in every language, and a window that can be resized and maximized (everything
+scales with it). Every option has a hover tip, and the **?** buttons open short guides. Only the options people really use
+are kept, so it stays simple.
+
+<p align="center"><img src="docs/screenshots/preferences-v2.3.png" width="480" alt="RePicturer Preferences window"></p>
+
+**Preferences** holds the few advanced settings: the Real-CUGAN sync gap, not overwriting existing files, optional custom
+input / output folders, and how much of the free GPU memory and RAM RePicturer may use.
 
 ## What RePicturer adds
 
 Beyond the original waifu2x-caffe GUI, RePicturer brings its own improvements:
 
+* **Performance control:** the share of free VRAM and RAM RePicturer may use is set in Preferences (20-80 %, default 60 %),
+  like Photoshop's memory setting. Every GPU memory request is counted against it, a Split size that clearly does not fit is
+  lowered before the run, and pictures wait for free RAM instead of overloading the computer.
+* **Automatic recovery:** an image that runs out of GPU memory is retried up to 3 times, alone on the GPU with a smaller Split
+  size, and the next images keep those safer settings. A broken or half-empty image is never saved; if an image still fails,
+  the conversion stops with a clear message.
 * **Built-in file explorer:** a dark, fast file browser of its own, in a separate window (address bar, back / forward / up,
   home folders and drives, search as you type, keyboard navigation). It remembers the last folder, only lists the image
   types the program reads, and checks the input and output paths before you start, with a clear warning when a path is wrong.
@@ -118,11 +133,11 @@ Beyond the original waifu2x-caffe GUI, RePicturer brings its own improvements:
 * **Any size, really processed:** any scale rate, width, height or width x height, also 1.00x: every mode that scales runs
   the network and then resizes to the exact size. Real-ESRGAN x4plus has its native 2x network (x2plus) for faster 2x.
 * **Animated GIF and WebP** stay animated, with frame timing and loop count kept.
-* **Safe input:** every field only accepts valid values (scale, size, the quality range of each output format), with a
-  warning instead of a failed conversion. `setting.ini` is checked and repaired at startup, and Reset to Default keeps
-  your language.
+* **Safe input:** every field only accepts valid values (scale, size, the quality range of each output format, the memory
+  shares), with a warning right away instead of a failed conversion. `setting.ini` is checked and repaired at startup,
+  and Reset to Default keeps your language.
 * **10 languages** with bundled Noto fonts, every label checked to fit.
-* **CPU fallback that works:** the CPU mode crash of the ncnn releases is fixed, and Real-ESRGAN gets a CPU path.
+* **CPU fallback that works:** the CPU crashes of the ncnn releases are fixed, and Real-ESRGAN gets a CPU path.
 * **Portable on Windows and Linux:** unzip and run, no installer, no Python, no CUDA; a Linux menu entry is one script away.
 
 ## Models
@@ -184,7 +199,7 @@ The outdated waifu2x-caffe vgg_7 models (RGB, Photo, Y, ukbench) are no longer s
 * **Scale:** `<Scale Rate>` (digits, up to 2 decimals), `<Width>`, `<Height>` (whole numbers) or `<Width>x<Height>` (e.g. 1920x1080). Each box only accepts its own format; anything else is blocked with a warning.
 * **Processing:** Split size (0 = auto) and Thread(s) (1-32, replaces caffe's batch size), each with a hover tip and a **?** guide.
 * **GPU memory limit** (Preferences): RePicturer uses at most a share of the GPU memory that is free when a conversion starts
-  (20-80 %, default 60 %). An image that runs out of GPU memory is retried up to 3 times with a smaller Split size instead of
+  (20-80 %, default 60 %). An image that runs out of GPU memory is retried up to 3 times with 1 thread and a smaller Split size instead of
   being saved incomplete; if it still fails, the conversion stops.
 * **RAM limit** (Preferences): the pictures in progress use at most a share of the RAM that is free when a conversion starts
   (20-80 %, default 60 %); when it is reached the next pictures wait.
@@ -206,7 +221,8 @@ The outdated waifu2x-caffe vgg_7 models (RGB, Photo, Y, ukbench) are no longer s
 
 ```
 repicturer-cli -i in -o out [-m model-folder] [-n level] [-s rate | -W width | -H height] [-M noise|scale|noise_scale]
-                    [-f format] [-q quality] [-d 8|16|32] [-t tile] [-g gpu(s)] [-j l:p:s] [-x] [-c syncgap]
+                    [-f format] [-q quality] [-t tile] [-g gpu(s)] [-j l:p:s] [-c syncgap]
+                    [--vram-percent 20-80] [--ram-percent 20-80]
                     [-l png:jpg] [-r] [-k] [-L list.txt] [--list-gpu] [--progress] [-v]
 ```
 
@@ -218,12 +234,9 @@ The engine follows the model folder (`models-cunet`, `models-realcugan-se`, `mod
 * **Real-ESRGAN gets a CPU path,** which the official realesrgan-ncnn-vulkan never had.
 * **Robustness:** model loading errors are reported, destructors are null-safe, and the pixel order is the same on every OS.
 * **MinGW builds** use `-Wa,-muse-unaligned-vector-move`, which prevents AVX/AVX-512 crashes on CPUs such as the i7-11800H and Ryzen 7000.
-
-## Linux
-
-* Extract `RePicturer-linux.zip` with `unzip` (it keeps the executable permissions; if your archive tool drops them, run `chmod +x RePicturer repicturer-cli install-desktop-entry.sh`) and run `./RePicturer`.
-* `./install-desktop-entry.sh` adds the program to your application menu with its name and icon.
-* It needs glibc 2.27+ (Ubuntu 18.04+, Debian 10+, Fedora, Arch …), X11 or XWayland, OpenGL 3.0, and a Vulkan driver.
+* **Incomplete images:** the ncnn engines skipped tiles when GPU memory ran out and still saved the image, so parts of it
+  were empty. RePicturer detects every failed GPU memory request and retries the image instead.
+* **Real-CUGAN on the CPU** crashed for pictures with transparency that need more than one tile; fixed.
 
 ## Building
 
