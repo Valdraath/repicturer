@@ -43,6 +43,7 @@ int realcugan_take_error(); // realcugan.cpp
 #include "image_io.h"
 #include "anim_io.h"
 #include "model_info.h"
+#include "resample.h"
 #include "../common/formats.h"
 
 #ifndef W2X_VERSION
@@ -66,46 +67,76 @@ static std::string P(const path_t& p) { return path_to_utf8(p); }
 static void print_usage()
 {
     const char* u =
-        "repicturer-cli " W2X_VERSION " (RePicturer converter: waifu2x + Real-CUGAN + Real-ESRGAN, based on waifu2x-ncnn-vulkan)\n"
-        "Usage: repicturer-cli -i infile -o outfile [options]...\n"
+        "repicturer-cli " W2X_VERSION " (RePicturer converter: waifu2x + Real-CUGAN + Real-ESRGAN AI models and classic\n"
+        "filters, based on waifu2x-ncnn-vulkan)\n"
+        "Usage: repicturer-cli -i input -o output [options]...\n"
         "\n"
-        "  -h, --help                show this help\n"
-        "  -v, --verbose             verbose output\n"
-        "  -i, --input path          input image path or directory\n"
-        "  -o, --output path         output image path or directory\n"
-        "  -n, --noise_level n       denoise level (-1/0/1/2/3, default=0)\n"
-        "  -s, --scale_ratio r       upscale ratio, any positive number (default=2)\n"
-        "  -W, --scale_width w       target width (height follows the aspect ratio unless -H is set)\n"
-        "  -H, --scale_height h      target height (width follows the aspect ratio unless -W is set)\n"
-        "  -M, --mode mode           noise / scale / noise_scale (default: from -n and -s)\n"
-        "  -t, --tile_size t         tile size (>=32/0=auto, default=0) can be 0,0,0 for multi-gpu\n"
-        "  -m, --model_dir path      model folder (default=models-cunet); the engine follows the folder:\n"
+        "Input and output (every mode)\n"
+        "  -i, --input path          input picture or folder\n"
+        "  -o, --output path         output picture or folder\n"
+        "  -r, --recursive           also convert sub folders, keeping the folder structure\n"
+        "  -l, --extensions list     extensions to read from a folder, e.g. png:jpg:jpeg:webp:tif:tiff:bmp:tga\n"
+        "  -L, --file-list file      utf-8 text file, one \"input<TAB>output\" pair per line\n"
+        "  -k, --no-overwrite        skip pictures whose output file already exists (it is kept)\n"
+        "  -f, --format fmt          output format png/jpg/webp/bmp/jp2/sr/tif/hdr/exr/ppm/tga/gif (default: the\n"
+        "                            output file's extension, else png); animated gif / webp stay animated\n"
+        "  -q, --quality q           jpg 0-100 (100), webp 1-100 or 101 = lossless (101), tga 0/1 = rle off/on\n"
+        "\n"
+        "Mode and size (every mode)\n"
+        "  -M, --mode mode           denoise-scale = AI Denoise & Scale, scale = AI Scale Only,\n"
+        "                            denoise = AI Denoise Only, non-ai-scale = Non-AI Scale (a classic filter,\n"
+        "                            no model) (default: from -n and -s)\n"
+        "  -s, --scale r             scale rate, any positive number (default 2)\n"
+        "  -W, --width w             output width (the height follows the aspect ratio unless -H is set)\n"
+        "  -H, --height h            output height (the width follows the aspect ratio unless -W is set)\n"
+        "                            -W and -H together: exactly that width x height\n"
+        "\n"
+        "AI modes (denoise-scale / scale / denoise)\n"
+        "  -m, --model path          model folder (default models-cunet); the engine follows the folder:\n"
         "                              models-cunet, models-upconv_7_*, models-upresnet10 : waifu2x\n"
         "                              models-realcugan-se / -pro / -nose                  : Real-CUGAN\n"
         "                              models-realesrgan-x4plus(-anime), models-realesr-*, models-realesrnet-x4plus,\n"
-        "                              models-nomos8ksc, models-nmkd-siax / -superscale (model.ini)  : Real-ESRGAN\n"
-        "                            Real-CUGAN: -n 0 = conservative, 1-3 = denoise, -1 = no denoise\n"
-        "                            Real-ESRGAN: -n picks the denoise strength when the model has x4-denoise0..3\n"
-        "                            (realesr-general-x4v3) or the detail level 0-3 when it has x4-detail0..2 (NMKD Siax);\n"
-        "                            otherwise it is ignored (the network restores by itself)\n"
-        "  -c, --syncgap n           Real-CUGAN sync gap mode 0-3 (default=3, 0 = off)\n"
-        "  -g, --gpu id              gpu device to use (-1=cpu, default=auto) can be 0,1,2 for multi-gpu\n"
-        "  -j, --jobs l:p:s          thread count for load/proc/save (default=1:2:2) can be 1:2,2,2:2 for multi-gpu\n"
-        "                            proc 1-32 per gpu\n"
+        "                              models-nomos8ksc, models-lsdir-compact, models-nmkd-siax / -superscale : Real-ESRGAN\n"
+        "  -n, --noise-level n       denoise level -1 / 0 / 1 / 2 / 3 (default 0; -1 = no denoise)\n"
+        "                            Real-CUGAN: 0 = conservative, 1-3 = denoise\n"
+        "                            Real-ESRGAN: the denoise strength (Real-ESRGAN General), the cleanup level\n"
+        "                            (LSDIR Compact) or the detail level 0-3 (NMKD Siax); others clean up by themselves\n"
+        "  -t, --split-size t        0 = auto (default), 1 = no split (the whole picture as 1 tile), 2 and more =\n"
+        "                            tiles of that size; one per gpu for several gpus (0,0)\n"
+        "  -c, --sync-gap n          Real-CUGAN sync gap 0-3 (default 3, 0 = off)\n"
+        "  Post-conversion: the AI result is resized to the exact output size with -F / -T / -a / --linear-light\n"
+        "  (default: Bicubic Mitchell, no anti-ringing, no linear light)\n"
+        "\n"
+        "Non-AI filter (mode non-ai-scale, and the post-conversion resize of the AI modes; --deband: before them)\n"
+        "  -F, --filter name         nearest / bilinear / mitchell (default) / catrom / lanczos / spline36 / jinc\n"
+        "  -T, --taps n              lanczos 2 / 3 (default) / 4 / 8, jinc 3 (default) / 4 / 8\n"
+        "  -a, --anti-ringing a      off (default) / relaxed / strict: reduces the halos of catrom, lanczos,\n"
+        "                            spline36 and jinc around hard edges\n"
+        "      --linear-light        scale in linear light; used only when the picture gets smaller\n"
+        "      --dither d            off (default) / ordered / error-diffusion: how the result is rounded to 8 bit;\n"
+        "                            dithering keeps smooth gradients free of bands (used when the picture is resized)\n"
+        "      --deband d            off (default) / low / medium / high: smooths away banding already in the picture\n"
+        "                            (skies, shadows, gradients), before AI Conversion or the Non-AI filter\n"
+        "\n"
+        "Performance (every mode)\n"
+        "  -g, --gpu id              gpu to use (-1 = cpu, default: the first gpu); 0,1 for several gpus\n"
+        "  -j, --threads l:p:s       threads for load : process : save (default 1:2:2); process 1-32 per gpu\n"
+        "                            (pictures at the same time), or the cpu cores with -g -1; 1:2,2:2 for 2 gpus\n"
         "      --vram-percent p      use at most p % (20-80, default 60) of the gpu memory that is free when the\n"
-        "                            conversion starts; an image that runs out is retried up to 3 times with a\n"
-        "                            smaller tile size, then the conversion stops\n"
+        "                            conversion starts; an AI picture that fails is retried up to 2 times (2 tiles,\n"
+        "                            then 1), then the conversion stops\n"
         "      --ram-percent p       use at most p % (20-80, default 60) of the RAM that is free when the conversion\n"
-        "                            starts for the images in progress; pictures wait until enough is free\n"
-        "  -f, --format fmt          output format png/jpg/webp/bmp/jp2/sr/tif/hdr/exr/ppm/tga/gif (default=ext/png)\n"
-        "                            animated gif / webp inputs stay animated (saved as .gif / .webp)\n"
-        "  -q, --output_quality q    jpg 0-100 (100), webp 1-100 or 101=lossless (101), tga 0/1 = rle off/on\n"
-        "  -l, --input_extension_list list  extensions to read from a directory, e.g. png:jpg:jpeg:tif:tiff:bmp:tga\n"
-        "  -r, --recursive           also convert sub directories, keeping the folder structure\n"
-        "  -k, --no_overwrite        do not overwrite existing output files\n"
-        "  -L, --file_list file      utf-8 text file, one \"input<TAB>output\" pair per line\n"
+        "                            starts; pictures wait until enough is free\n"
+        "\n"
+        "Other\n"
+        "  -h, --help                show this help\n"
+        "  -v, --verbose             print every step\n"
         "      --list-gpu            print the vulkan devices and exit\n"
-        "      --progress            print machine readable progress lines\n";
+        "      --progress            print machine readable progress lines (for front ends)\n"
+        "\n"
+        "Older names still work: --noise_level --scale_ratio --scale_width --scale_height --tile_size --model_dir\n"
+        "--jobs --output_quality --input_extension_list --no_overwrite --file_list --syncgap, and the modes noise_scale\n"
+        "noise resize.\n";
     fputs(u, stdout);
 }
 
@@ -116,6 +147,7 @@ enum Mode
     MODE_NOISE = 0,
     MODE_SCALE = 1,
     MODE_NOISE_SCALE = 2,
+    MODE_RESIZE = 3, // Non-AI Scale: a classic filter, no network
 
 };
 
@@ -147,6 +179,9 @@ struct Options
     int syncgap = -1;
     int vram_percent = 60;
     int ram_percent = 60;
+    ResampleOptions resample;  // mode resize, and the final resize of the AI modes
+    bool taps_set = false;
+    int deband = 0;            // 0 off, 1 low, 2 medium, 3 high: before the AI / the filter
 };
 
 static std::vector<int> parse_int_array(const std::string& s)
@@ -193,8 +228,16 @@ static int parse_args(const std::vector<path_t>& args, Options& o)
         {'l', "input_extension_list", true}, {'r', "recursive", false},
         {'k', "no_overwrite", false}, {'L', "file_list", true}, {0, "list-gpu", false}, {0, "progress", false},
         {0, "output_extention", true}, {0, "input_extention_list", true}, {'c', "syncgap", true}, {0, "vram-percent", true}, {0, "ram-percent", true},
+        {'F', "filter", true}, {'T', "taps", true}, {'a', "anti-ringing", true}, {0, "linear-light", false}, {0, "dither", true}, {0, "deband", true},
     };
     const int nspec = (int)(sizeof(specs) / sizeof(specs[0]));
+    // the names of v3.0 (one style, the words of the gui) for the older waifu2x-ncnn-vulkan / caffe names, which still work
+    static const char* const renamed[][2] = {
+        {"noise-level", "noise_level"}, {"scale", "scale_ratio"}, {"width", "scale_width"}, {"height", "scale_height"},
+        {"split-size", "tile_size"}, {"model", "model_dir"}, {"threads", "jobs"}, {"quality", "output_quality"},
+        {"extensions", "input_extension_list"}, {"no-overwrite", "no_overwrite"}, {"file-list", "file_list"},
+        {"sync-gap", "syncgap"},
+    };
 
     for (size_t i = 0; i < args.size(); i++)
     {
@@ -212,6 +255,7 @@ static int parse_args(const std::vector<path_t>& args, Options& o)
             std::string name = a.substr(2);
             size_t eq = name.find('=');
             if (eq != std::string::npos) { val = name.substr(eq + 1); name = name.substr(0, eq); has_inline = true; }
+            for (const auto& r : renamed) if (name == r[0]) name = r[1];
             for (int k = 0; k < nspec; k++) if (name == specs[k].l) sp = &specs[k];
         }
         else if (a.size() == 2)
@@ -240,19 +284,49 @@ static int parse_args(const std::vector<path_t>& args, Options& o)
         else if (l == "verbose") o.verbose = true;
         else if (l == "input") o.inputpath = pval;
         else if (l == "output") o.outputpath = pval;
-        else if (l == "noise_level") { if (!parse_int(val, o.noise)) { fprintf(stderr, "invalid noise argument\n"); return -1; } }
+        else if (l == "noise_level") { if (!parse_int(val, o.noise)) { fprintf(stderr, "invalid noise-level argument\n"); return -1; } }
         else if (l == "scale_ratio") { if (!parse_number(val, o.scale) || !(o.scale > 0)) { fprintf(stderr, "invalid scale argument\n"); return -1; } }
-        else if (l == "scale_width") { if (!parse_int(val, o.scale_width) || o.scale_width <= 0) { fprintf(stderr, "invalid scale_width argument\n"); return -1; } }
-        else if (l == "scale_height") { if (!parse_int(val, o.scale_height) || o.scale_height <= 0) { fprintf(stderr, "invalid scale_height argument\n"); return -1; } }
+        else if (l == "scale_width") { if (!parse_int(val, o.scale_width) || o.scale_width <= 0) { fprintf(stderr, "invalid width argument\n"); return -1; } }
+        else if (l == "scale_height") { if (!parse_int(val, o.scale_height) || o.scale_height <= 0) { fprintf(stderr, "invalid height argument\n"); return -1; } }
         else if (l == "mode")
         {
-            if (val == "noise") o.mode = MODE_NOISE;
+            if (val == "denoise" || val == "noise") o.mode = MODE_NOISE;
             else if (val == "scale") o.mode = MODE_SCALE;
-            else if (val == "noise_scale") o.mode = MODE_NOISE_SCALE;
+            else if (val == "denoise-scale" || val == "noise_scale") o.mode = MODE_NOISE_SCALE;
+            else if (val == "non-ai-scale" || val == "resize") o.mode = MODE_RESIZE;
 
             else { fprintf(stderr, "invalid mode argument\n"); return -1; }
         }
         else if (l == "tile_size") o.tilesize = parse_int_array(val);
+        else if (l == "filter")
+        {
+            o.resample.filter = resample_filter_from_name(val);
+            if (o.resample.filter < 0) { fprintf(stderr, "invalid filter argument\n"); return -1; }
+        }
+        else if (l == "taps") { if (!parse_int(val, o.resample.taps)) { fprintf(stderr, "invalid taps argument\n"); return -1; } o.taps_set = true; }
+        else if (l == "anti-ringing")
+        {
+            if (val == "off") o.resample.antiringing = AR_OFF;
+            else if (val == "relaxed") o.resample.antiringing = AR_RELAXED;
+            else if (val == "strict") o.resample.antiringing = AR_STRICT;
+            else { fprintf(stderr, "invalid anti-ringing argument (off / relaxed / strict)\n"); return -1; }
+        }
+        else if (l == "linear-light") o.resample.linear = true;
+        else if (l == "dither")
+        {
+            if (val == "off") o.resample.dither = DITHER_OFF;
+            else if (val == "ordered") o.resample.dither = DITHER_ORDERED;
+            else if (val == "error-diffusion") o.resample.dither = DITHER_ERROR_DIFFUSION;
+            else { fprintf(stderr, "invalid dither argument (off / ordered / error-diffusion)\n"); return -1; }
+        }
+        else if (l == "deband")
+        {
+            if (val == "off") o.deband = 0;
+            else if (val == "low") o.deband = 1;
+            else if (val == "medium") o.deband = 2;
+            else if (val == "high") o.deband = 3;
+            else { fprintf(stderr, "invalid deband argument (off / low / medium / high)\n"); return -1; }
+        }
         else if (l == "ram-percent")
         {
             if (!parse_int(val, o.ram_percent) || o.ram_percent < 20 || o.ram_percent > 80) { fprintf(stderr, "invalid ram-percent argument (20-80)\n"); return -1; }
@@ -266,13 +340,13 @@ static int parse_args(const std::vector<path_t>& args, Options& o)
         else if (l == "jobs")
         {
             size_t c1 = val.find(':'), c2 = val.rfind(':');
-            if (c1 == std::string::npos || c2 == c1) { fprintf(stderr, "invalid thread count argument\n"); return -1; }
+            if (c1 == std::string::npos || c2 == c1) { fprintf(stderr, "invalid threads argument (load:process:save)\n"); return -1; }
             o.jobs_load = atoi(val.substr(0, c1).c_str());
             o.jobs_proc = parse_int_array(val.substr(c1 + 1, c2 - c1 - 1));
             o.jobs_save = atoi(val.substr(c2 + 1).c_str());
         }
         else if (l == "format" || l == "output_extention") { o.format = val; o.format_set = true; }
-        else if (l == "output_quality") { if (!parse_int(val, o.quality)) { fprintf(stderr, "invalid output_quality argument\n"); return -1; } }
+        else if (l == "output_quality") { if (!parse_int(val, o.quality)) { fprintf(stderr, "invalid quality argument\n"); return -1; } }
         else if (l == "input_extension_list" || l == "input_extention_list")
         {
             o.extlist.clear();
@@ -294,7 +368,7 @@ static int parse_args(const std::vector<path_t>& args, Options& o)
         else if (l == "progress") o.progress = true;
         else if (l == "syncgap")
         {
-            if (!parse_int(val, o.syncgap) || o.syncgap < 0 || o.syncgap > 3) { fprintf(stderr, "invalid syncgap argument\n"); return -1; }
+            if (!parse_int(val, o.syncgap) || o.syncgap < 0 || o.syncgap > 3) { fprintf(stderr, "invalid sync-gap argument (0-3)\n"); return -1; }
         }
     }
     return 0;
@@ -457,7 +531,7 @@ static Plan make_plan(const Options& o, int w, int h, bool is_jpeg)
     Plan p;
     (void)is_jpeg; // denoising no longer depends on the source format
     const bool is_noise = o.mode == MODE_NOISE || o.mode == MODE_NOISE_SCALE;
-    const bool is_scale = o.mode == MODE_SCALE || o.mode == MODE_NOISE_SCALE;
+    const bool is_scale = o.mode == MODE_SCALE || o.mode == MODE_NOISE_SCALE || o.mode == MODE_RESIZE;
 
     double factor = 1.0;
     if (is_scale)
@@ -474,7 +548,9 @@ static Plan make_plan(const Options& o, int w, int h, bool is_jpeg)
 
     double remaining = factor;
 
-    if (g_model.engine == ENGINE_WAIFU2X)
+    if (o.mode == MODE_RESIZE)
+        ; // Non-AI Scale: only the resize to the output size below
+    else if (g_model.engine == ENGINE_WAIFU2X)
     {
         if (is_noise)
         {
@@ -656,6 +732,8 @@ struct GpuNets
     std::mutex lock;
     std::map<path_t, Processor*> nets;
     std::map<path_t, bool> failed;
+    std::unique_ptr<GpuResampler> resampler; // created on first use
+    bool resampler_failed = false;
 };
 
 static int auto_tilesize_mb(uint32_t hb, int scale);
@@ -686,6 +764,22 @@ static int auto_tilesize_mb(uint32_t hb, int scale)
 }
 
 // the largest tile whose estimated memory fits this thread's share (the auto table above: memory grows with tile^2)
+static const int WHOLE_IMAGE_TILE = 1 << 20; // split size 1: larger than any image (a retry still lowers it when memory runs out)
+
+// "no split" on the gpu: one tile, but no bigger than the gpu can address. A shader buffer larger than
+// maxStorageBufferRange is not an error: the gpu silently skips what lies beyond it, and the bottom of a big picture
+// came out empty (e.g. a 960x6144 sprite sheet at 2.25x). The cpu has no such limit
+static int whole_tile(const GpuNets& g, int scale)
+{
+    if (g.gpuid == -1) return WHOLE_IMAGE_TILE;
+    const double range = (double)ncnn::get_gpu_info(g.gpuid).physicalDeviceProperties().limits.maxStorageBufferRange;
+    // the largest buffer of a tile: 64 channels of 32-bit floats at the output size, with the padding (every engine
+    // stays below that)
+    const double per_px = (double)scale * scale * 64 * 4;
+    const int t = ((int)std::sqrt(range / per_px) - 64) / 4 * 4;
+    return std::max(32, std::min(WHOLE_IMAGE_TILE, t));
+}
+
 static int fit_tilesize(const GpuNets& g, int scale)
 {
     const uint32_t hb = g_model.engine == ENGINE_REALESRGAN && g.heap_total ? g.heap_total : g.heap_budget;
@@ -714,8 +808,9 @@ static const Processor* get_net(GpuNets* g, const NetSpec& spec, std::string& er
 
     const path_t param = path_join(g_model.dir, spec.base + PATHSTR(".param"));
     const path_t bin = path_join(g_model.dir, spec.base + PATHSTR(".bin"));
-    int tile = g->tilesize > 0 ? g->tilesize : auto_tilesize(*g, spec.scale);
-    if (g->tilesize > 0 && g->gpuid != -1)
+    // split size 1 = no split: one tile bigger than any picture, so every image is processed in one piece
+    int tile = g->tilesize == 1 ? whole_tile(*g, spec.scale) : g->tilesize > 0 ? g->tilesize : auto_tilesize(*g, spec.scale);
+    if (g->tilesize > 1 && g->gpuid != -1)
     {
         // a manual split size that clearly needs more than this thread's share of the memory limit is lowered
         const int fit = fit_tilesize(*g, spec.scale);
@@ -893,7 +988,10 @@ static size_t task_ram_bytes(const Task& t)
     const size_t out = (size_t)plan.outw * (size_t)plan.outh * c;
     size_t in = (size_t)t.image.w * (size_t)t.image.h * c;
     if (t.anim) in *= std::max<size_t>(1, t.anim->frames.size());
-    return in + 2 * maxpass + 2 * out;
+    // the final resize works in stripes of at most 3 float buffers of 64 MB
+    const size_t resample = std::min<size_t>((size_t)192 << 20, (maxpass / c + out / c) * 16 * 2);
+    const size_t deband = g_opt.deband ? (size_t)t.image.w * t.image.h * 28 : 0; // the deband buffers
+    return in + 2 * maxpass + 2 * out + resample + deband;
 }
 
 static void load_worker(const std::vector<path_t>* inputs, const std::vector<path_t>* outputs, std::atomic<int>* next)
@@ -985,15 +1083,31 @@ static void load_worker(const std::vector<path_t>* inputs, const std::vector<pat
     }
 }
 
+// the gpu copies 8-bit pixels in and out in blocks rounded up to 16 bytes: with buffers of the exact picture size it read
+// and wrote up to 15 bytes past their end (heap corruption -> a crash when width x height x channels is no multiple of
+// 16, e.g. 146x83 at 3x). Both buffers get room for that and are cut back to the picture size afterwards
+static const size_t GPU_COPY_SLACK = 64;
+
 static int run_net(const Processor* net, int scale, const Image8& in, Image8& out)
 {
-    ncnn::Mat inimage(in.w, in.h, (void*)in.data.data(), (size_t)in.c, in.c);
+    // every channel, the transparency too, goes through the engine on its device (gpu or cpu)
+    const size_t npx = (size_t)in.w * in.h;
+    std::vector<unsigned char> in_padded(npx * in.c + GPU_COPY_SLACK, 0);
+    memcpy(in_padded.data(), in.data.data(), npx * in.c);
+    ncnn::Mat inimage(in.w, in.h, (void*)in_padded.data(), (size_t)in.c, in.c);
     out.w = in.w * scale;
     out.h = in.h * scale;
     out.c = in.c;
-    out.data.resize((size_t)out.w * out.h * out.c);
-    ncnn::Mat outimage(out.w, out.h, (void*)out.data.data(), (size_t)out.c, out.c);
-    return net->process(inimage, outimage);
+    const size_t onpx = (size_t)out.w * out.h;
+    std::vector<unsigned char> buf(onpx * in.c + GPU_COPY_SLACK, 0);
+    ncnn::Mat outimage(out.w, out.h, (void*)buf.data(), (size_t)in.c, in.c);
+    const int r = net->process(inimage, outimage);
+    // an engine that had nothing to do hands the input back instead of writing into the buffer
+    if (r == 0 && outimage.data != buf.data() && outimage.data && outimage.w == out.w && outimage.h == out.h)
+        memcpy(buf.data(), outimage.data, onpx * in.c);
+    buf.resize(onpx * in.c);
+    out.data.swap(buf);
+    return r;
 }
 
 // one network pass; failed gpu allocations (out of memory / over the limit) count as an error:
@@ -1013,6 +1127,51 @@ static int run_net_checked(GpuNets* g, const Processor* net, int scale, const Im
     if (g_model.engine == ENGINE_REALCUGAN && realcugan_take_error() != 0) rr = -1;
     if (ncnn::take_vk_alloc_failures() != 0) rr = -1;
     return rr;
+}
+
+// the resize to the output size (the whole conversion in mode resize): the Non-AI filter on this thread's device
+static void final_resize(GpuNets* g, const Image8& in, int ow, int oh, OutImage& out, const path_t& inpath)
+{
+    const ResampleOptions& ro = g_opt.resample;
+    if (g->gpuid != -1 && !(in.w == ow && in.h == oh))
+    {
+        GpuResampler* r = 0;
+        {
+            std::lock_guard<std::mutex> lk(g->lock);
+            if (!g->resampler && !g->resampler_failed)
+            {
+                g->resampler.reset(new GpuResampler(g->gpuid));
+                if (!g->resampler->ok())
+                {
+                    g->resampler.reset();
+                    g->resampler_failed = true;
+                    out_line(stderr, "the gpu filter could not be created, the cpu resizes instead");
+                }
+            }
+            r = g->resampler.get();
+        }
+        if (r)
+        {
+            ncnn::take_vk_alloc_failures();
+            int rr;
+            {
+                std::shared_lock<std::shared_mutex> sl(g->rw);
+                rr = r->run(in, ow, oh, ro, out);
+            }
+            if (ncnn::take_vk_alloc_failures() != 0) rr = -1;
+            // a gpu result without any colour or opacity from a picture that has some is a gpu error too
+            if (rr == 0)
+            {
+                bool any_out = false, any_in = false;
+                for (size_t i = 0; i < out.data.size() && !any_out; i++) any_out = out.data[i] != 0;
+                for (size_t i = 0; i < in.data.size() && !any_in; i++) any_in = in.data[i] != 0;
+                if (any_in && !any_out) rr = -1;
+            }
+            if (rr == 0) return;
+            out_line(stderr, P(inpath) + ": gpu error in the filter, the cpu resizes this picture instead");
+        }
+    }
+    resample_cpu(in, ow, oh, ro, out, g->gpuid == -1 ? g->num_threads : std::max(1, (int)std::thread::hardware_concurrency()));
 }
 
 static void proc_worker(GpuNets* g)
@@ -1037,7 +1196,7 @@ static void proc_worker(GpuNets* g)
             std::string d;
             for (size_t s = 0; s < plan.nets.size(); s++)
                 d += (s ? " -> " : "") + P(plan.nets[s].base) + " (x" + std::to_string(plan.nets[s].scale) + ")";
-            if (d.empty()) d = "no network";
+            if (d.empty()) d = g_opt.mode == MODE_RESIZE ? std::string("filter ") + resample_filter_name(g_opt.resample.filter) : std::string("no network");
             d += " -> resize " + std::to_string(t.image.w) + "x" + std::to_string(t.image.h) + " to " + std::to_string(plan.outw) + "x" + std::to_string(plan.outh);
 
             if (g_opt.progress)
@@ -1047,7 +1206,10 @@ static void proc_worker(GpuNets* g)
         }
 
         std::string err;
+        const int dbThreads = g->gpuid == -1 ? g->num_threads : std::max(1, (int)std::thread::hardware_concurrency());
         auto run_plan = [&](Image8& cur) -> bool {
+            // reduce the banding of the source first: the AI or the filter would sharpen the steps
+            if (g_opt.deband) deband_image(cur, g_opt.deband, dbThreads);
             for (size_t s = 0; s < plan.nets.size(); s++)
             {
                 const Processor* net = get_net(g, plan.nets[s], err);
@@ -1071,42 +1233,35 @@ static void proc_worker(GpuNets* g)
                 }
                 if (rr != 0 && g->gpuid != -1 && !g_stop)
                 {
-                    // out of gpu memory: from now on 1 thread on this gpu (the others wait, their memory is free) and
-                    // up to 3 retries: first the automatic split size for the whole memory limit (as one thread now has
-                    // it all), at most half of the one that failed and no bigger than the picture; then half of that.
-                    // nothing was saved for the failed try
+                    // the gpu failed (out of memory or a tile it cannot handle): from now on 1 thread on this gpu (the
+                    // others wait, their memory is free) and up to 2 retries: first the picture in 2 tiles (its longer
+                    // side halved), then as 1 tile (no split). nothing was saved for the failed try
                     g->single = true;
-                    int tile = pn->get_tile();
-                    if (g->tile_cap > 0) tile = std::min(tile, (int)g->tile_cap);
-                    const int failed = tile;
-                    for (int k = 1; k <= 3 && rr != 0 && !g_stop; k++)
+                    for (int k = 1; k <= 2 && rr != 0 && !g_stop; k++)
                     {
                         std::unique_lock<std::shared_mutex> ul(g->rw);
                         const int t0 = pn->get_tile();
-                        if (k == 1)
-                        {
-                            const int picture = std::max(32, (std::max(cur.w, cur.h) + 3) / 4 * 4);
-                            tile = std::min(std::min(auto_tilesize_mb(g->heap_total, plan.nets[s].scale), failed / 2), picture);
-                        }
-                        else
-                            tile = tile / 2;
-                        tile = std::max(32, tile);
+                        const int whole = whole_tile(*g, plan.nets[s].scale);
+                        const int longer = std::max(cur.w, cur.h);
+                        int tile = k == 1 ? std::min(whole, std::max(4, ((longer + 1) / 2 + 3) / 4 * 4)) : whole;
+                        const bool noSplit = tile >= longer;
+                        const std::string shown = noSplit ? std::string("1") : std::to_string(tile); // 1 = no split
                         if (g_opt.progress)
-                            out_line(stdout, "RETRY\t" + P(t.inpath) + "\t" + std::to_string(k) + "\t" + std::to_string(tile));
+                            out_line(stdout, "RETRY\t" + P(t.inpath) + "\t" + std::to_string(k) + "\t" + shown);
                         else
-                            out_line(stderr, P(t.inpath) + ": out of gpu memory, retry " + std::to_string(k) + "/3 with 1 thread and tile size " + std::to_string(tile));
+                            out_line(stderr, P(t.inpath) + ": gpu error, retry " + std::to_string(k) + "/2 with 1 thread and tile size " + shown);
                         pn->set_tile(tile);
                         next = Image8();
                         rr = run_net_checked(g, net, plan.nets[s].scale, cur, next);
                         pn->set_tile(t0);
-                        if (rr == 0) g->tile_cap = tile; // the next pictures on this gpu use it too
+                        if (rr == 0) g->tile_cap = tile; // the next pictures on this gpu use at most this
                     }
                     if (rr != 0 && !g_stop.exchange(true))
                     {
                         if (g_opt.progress)
                             out_line(stdout, "STOP\t" + P(t.inpath));
                         else
-                            out_line(stderr, P(t.inpath) + ": still out of gpu memory after 3 retries, conversion stopped");
+                            out_line(stderr, P(t.inpath) + ": still failing after 2 retries, conversion stopped");
                     }
                 }
                 if (rr != 0) { err = "GPU error (probably out of GPU memory) - use a smaller Split size or fewer Thread(s)"; return false; }
@@ -1127,7 +1282,7 @@ static void proc_worker(GpuNets* g)
                 Image8 cur = std::move(a.frames[k]);
                 if (!run_plan(cur)) { ok = false; break; }
                 OutImage o;
-                image_resize_to(cur, plan.outw, plan.outh, o);
+                final_resize(g, cur, plan.outw, plan.outh, o, t.inpath);
                 image_alpha_clean(o);
                 if (!enc->add(o, a.durations_ms[k], err)) { ok = false; break; }
                 if (g_opt.progress)
@@ -1153,7 +1308,7 @@ static void proc_worker(GpuNets* g)
             continue;
         }
 
-        image_resize_to(cur, plan.outw, plan.outh, t.out);
+        final_resize(g, cur, plan.outw, plan.outh, t.out, t.inpath);
         image_alpha_clean(t.out);
         hold.n = 0;
         g_tosave->put(std::move(t));
@@ -1298,7 +1453,7 @@ static int run(const std::vector<path_t>& args)
 
     if (o.noise < -1 || o.noise > 3)
     {
-        fprintf(stderr, "invalid noise argument\n");
+        fprintf(stderr, "invalid noise-level argument\n");
         return -1;
     }
 
@@ -1309,11 +1464,11 @@ static int run(const std::vector<path_t>& args)
         else if (o.scale == 1.0 && o.scale_width == 0 && o.scale_height == 0) o.mode = MODE_NOISE;
         else o.mode = MODE_NOISE_SCALE;
     }
-    if (o.noise == -1)
+    if (o.noise == -1 && o.mode != MODE_RESIZE)
     {
         if (o.mode == MODE_NOISE)
         {
-            fprintf(stderr, "noise level -1 cannot be used with mode noise\n");
+            fprintf(stderr, "noise-level -1 cannot be used with mode denoise\n");
             return -1;
         }
         o.mode = MODE_SCALE;
@@ -1325,6 +1480,12 @@ static int run(const std::vector<path_t>& args)
         return -1;
     }
     o.format = find_output_format(o.format.c_str())->ext;
+    if (!o.taps_set) o.resample.taps = 3;
+    if (!resample_taps_valid(o.resample.filter, o.resample.taps))
+    {
+        fprintf(stderr, "invalid taps argument (lanczos 2 / 3 / 4 / 8, jinc 3 / 4 / 8)\n");
+        return -1;
+    }
 
 
     // collect input and output file paths
@@ -1416,20 +1577,25 @@ static int run(const std::vector<path_t>& args)
         return 0;
     }
 
-    // model
+    // model (mode resize has none)
     path_t modeldir = sanitize_dirpath(o.model);
-    if (!path_is_directory(modeldir))
+    if (o.mode == MODE_RESIZE)
+        g_model = ModelInfo();
+    else if (!path_is_directory(modeldir))
     {
         fprintf(stderr, "model directory %s not found\n", P(o.model).c_str());
         return -1;
     }
-    g_model = get_model_info(modeldir);
-    if (!g_model.known)
+    else
     {
-        fprintf(stderr, "unknown model dir type\n");
-        return -1;
+        g_model = get_model_info(modeldir);
+        if (!g_model.known)
+        {
+            fprintf(stderr, "unknown model dir type\n");
+            return -1;
+        }
+        scan_caps(o);
     }
-    scan_caps(o);
 
     // validate the conversion against the model (the real plan is made per image)
     {
@@ -1467,28 +1633,28 @@ static int run(const std::vector<path_t>& args)
 
     if (o.tilesize.size() != (size_t)use_gpu_count && !o.tilesize.empty())
     {
-        fprintf(stderr, "invalid tilesize argument\n");
+        fprintf(stderr, "invalid split-size argument\n");
         ncnn::destroy_gpu_instance();
         return -1;
     }
     for (size_t i = 0; i < o.tilesize.size(); i++)
     {
-        if (o.tilesize[i] != 0 && o.tilesize[i] < 32)
+        if (o.tilesize[i] < 0) // 0 auto, 1 whole image, 2+ tile size
         {
-            fprintf(stderr, "invalid tilesize argument\n");
+            fprintf(stderr, "invalid split-size argument\n");
             ncnn::destroy_gpu_instance();
             return -1;
         }
     }
     if (o.jobs_load < 1 || o.jobs_save < 1)
     {
-        fprintf(stderr, "invalid thread count argument\n");
+        fprintf(stderr, "invalid threads argument (load:process:save)\n");
         ncnn::destroy_gpu_instance();
         return -1;
     }
     if (o.jobs_proc.size() != (size_t)use_gpu_count && !o.jobs_proc.empty())
     {
-        fprintf(stderr, "invalid jobs_proc thread count argument\n");
+        fprintf(stderr, "invalid threads argument (one process count per gpu)\n");
         ncnn::destroy_gpu_instance();
         return -1;
     }
@@ -1496,7 +1662,7 @@ static int run(const std::vector<path_t>& args)
     {
         if (o.jobs_proc[i] < 1 || o.jobs_proc[i] > 32)
         {
-            fprintf(stderr, "invalid jobs_proc thread count argument (1-32)\n");
+            fprintf(stderr, "invalid threads argument (process 1-32)\n");
             ncnn::destroy_gpu_instance();
             return -1;
         }
@@ -1576,11 +1742,13 @@ static int run(const std::vector<path_t>& args)
         for (int i = 0; i < use_gpu_count; i++)
         {
             const std::string name = o.gpuid[i] == -1 ? std::string("CPU") : std::string(ncnn::get_gpu_info(o.gpuid[i]).device_name());
-            const std::string tile = o.tilesize[i] > 0 ? std::to_string(o.tilesize[i]) : std::string("auto");
+            const std::string tile = o.tilesize[i] == 1 ? std::string("no split") : o.tilesize[i] > 0 ? std::to_string(o.tilesize[i]) : std::string("auto");
+            // the Non-AI filters have no split size
+            const bool tiled = o.mode != MODE_RESIZE;
             if (o.progress)
-                out_line(stdout, "DEVICE\t" + std::to_string(o.gpuid[i]) + "\t" + name + " (tile " + tile + ")");
+                out_line(stdout, "DEVICE\t" + std::to_string(o.gpuid[i]) + "\t" + name + (tiled ? " (tile " + tile + ")" : std::string()));
             else if (o.verbose)
-                out_line(stderr, "using " + name + ", tile size " + tile);
+                out_line(stderr, "using " + name + (tiled ? ", tile size " + tile : std::string()));
         }
         {
             // the RAM limit: a share of the RAM that is free now (not of all RAM)

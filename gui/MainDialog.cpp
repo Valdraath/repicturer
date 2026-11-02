@@ -76,6 +76,40 @@ static const BuiltinModel g_builtinModels[] = {
 };
 static const char* const DefaultModelType = "realcugan-se";
 static const char* const FallbackModelType = "cunet";
+
+// Non-AI Scale filters (main window "Filter"), in list order. taps: 0 none, 1 Lanczos (2/3/4/8), 2 Jinc (3/4/8)
+struct NonAiFilterInfo { const char* cli; const char* title; const char* fileName; int taps; bool rings; const char* tip; };
+static const NonAiFilterInfo g_nonAiFilters[] = {
+    {"nearest", "Nearest Neighbor", "Nearest", 0, false,
+     "Copies the nearest pixel: hard, blocky edges and no blur. Best for pixel art at whole-number scales (2x, 3x, 4x)."},
+    {"bilinear", "Bilinear", "Bilinear", 0, false, "Blends the nearest pixels: fast and soft, a little blurry. No halos."},
+    {"mitchell", "Bicubic Mitchell", "Mitchell", 0, false,
+     "Soft and smooth, with almost no halos around edges. A safe choice for every picture."},
+    {"catrom", "Bicubic Catmull-Rom", "CatmullRom", 0, true, "Sharper than Mitchell, with slight halos."},
+    {"lanczos", "Lanczos", "Lanczos", 1, true,
+     "Sharp and keeps fine detail, with some halos around hard edges. More taps = sharper, with more halos. Anti-Ringing reduces them."},
+    {"spline36", "Spline36", "Spline36", 0, true, "Between Catmull-Rom and Lanczos: sharp, with clean edges and few halos."},
+    {"jinc", "Jinc", "Jinc", 2, true,
+     "Looks at the pixels in a circle around each point: sharp, with smooth diagonal edges and few jagged steps. Best for enlarging. Quite slow; more taps are slower."},
+};
+static const int NonAiFilterCount = (int)(sizeof(g_nonAiFilters) / sizeof(g_nonAiFilters[0]));
+static const int DefaultNonAiFilter = 2; // Bicubic Mitchell
+
+// Post-AI Conversion Settings (Preferences): the resize of the AI result to the exact output size
+struct PostFilterInfo { const char* key; const char* title; const char* cli; int taps; bool rings; const char* tip; };
+static const PostFilterInfo g_postFilters[] = {
+    {"mitchell", "Bicubic Mitchell", "mitchell", 0, false, "Soft and smooth, with almost no halos around edges. A safe choice for every picture."},
+    {"catrom", "Bicubic Catmull-Rom", "catrom", 0, true, "Sharper than Mitchell, with slight halos. The filter RePicturer used before v3.0."},
+    {"lanczos3", "Lanczos 3-tap", "lanczos", 3, true, "Sharp and keeps fine detail, with some halos around hard edges. Anti-Ringing reduces them."},
+    {"lanczos4", "Lanczos 4-tap", "lanczos", 4, true, "The sharpest filter, with the most halos. Best with Anti-Ringing turned on."},
+    {"spline36", "Spline36", "spline36", 0, true, "Between Catmull-Rom and Lanczos: sharp, with clean edges and few halos."},
+    {"jinc3", "Jinc 3-tap", "jinc", 3, true, "Sharp, but quite slow."},
+};
+static const int PostFilterCount = (int)(sizeof(g_postFilters) / sizeof(g_postFilters[0]));
+
+static const char* const AntiRingingCli[3] = {"off", "relaxed", "strict"};
+static const char* const DebandCli[4] = {"off", "low", "medium", "high"};
+static const char* const DitherCli[3] = {"off", "ordered", "error-diffusion"};
 // the image types the program reads: fixed, not a setting
 static const char* const DefaultInputExtList = "png:jpg:jpeg:tif:tiff:bmp:tga:webp:gif";
 // "PNG | JPG | JPEG | ..." for display
@@ -387,6 +421,27 @@ void DialogEvent::SetDeviceFromCombo(int idx)
 
 std::string DialogEvent::AddName() const
 {
+    if (mode == eModeNonAI)
+    {
+        // photo(Lanczos3)(AR-Relaxed)(x2.00).png
+        const NonAiFilterInfo& fi = g_nonAiFilters[std::min(NonAiFilterCount - 1, std::max(0, nonAiFilter))];
+        std::string addstr = std::string("(") + fi.fileName;
+        if (fi.taps == 1) addstr += std::to_string(lanczosTaps);
+        if (fi.taps == 2) addstr += std::to_string(jincTaps);
+        addstr += ")";
+        if (fi.rings && nonAiAR == 1) addstr += "(AR-Relaxed)";
+        if (fi.rings && nonAiAR == 2) addstr += "(AR-Strict)";
+        if (scaleType == eScaleTypeRatio)
+            addstr += "(x" + Format("%.2f", scale_ratio) + ")";
+        else if (scaleType == eScaleTypeWidth)
+            addstr += "(width " + std::to_string(scale_width) + ")";
+        else if (scaleType == eScaleTypeHeight)
+            addstr += "(height " + std::to_string(scale_height) + ")";
+        else
+            addstr += "(" + std::to_string(scale_width) + "x" + std::to_string(scale_height) + ")";
+        return addstr;
+    }
+
     std::string addstr("(");
     if (modelType >= 0 && modelType < (int)models.size()) addstr += models[modelType].name;
     addstr += ")";
@@ -434,6 +489,7 @@ bool DialogEvent::SyncMember(const bool NotSyncCropSize, const bool silent)
 
     switch (radioMode)
     {
+    case 3: mode = eModeNonAI; modeStr = "non-ai-scale"; break;
     case 2: mode = eModeNoise; modeStr = "noise"; break;
     case 1: mode = eModeScale; modeStr = "scale"; break;
     default: mode = eModeNoiseScale; modeStr = "noise_scale"; break;
@@ -544,12 +600,7 @@ bool DialogEvent::SyncMember(const bool NotSyncCropSize, const bool silent)
             ret = false;
             if (!silent) MessageBox(L("MessageCropSizeCheckError"), errTitle, IconError);
         }
-        else if (l != 0 && l < 32) // ncnn tiles must be 0 (auto) or >= 32
-        {
-            ret = false;
-            if (!silent) MessageBox(L2("MessageTileSizeCheckError", "Split size must be 0 (auto) or an integer of 32 or more"), errTitle, IconError);
-        }
-        else
+        else // 0 = auto, 1 = no split (the whole image), 2+ = tile size
             crop_size = (int)l;
     }
 
@@ -587,6 +638,7 @@ void DialogEvent::SetCropSizeList(const std::string& input_path)
 
     // ncnn picks the tile size from the free gpu memory: "0" is the recommended value
     cropItems.push_back("0");
+    cropItems.push_back("1"); // no split: the whole image in one piece
 
     if (!list.empty())
         cropItems.push_back(CropSeparator);
@@ -685,7 +737,7 @@ void DialogEvent::SaveIni(const bool isSyncMember)
         tQuality = std::to_string(output_quality >= fmt->quality_min && output_quality <= fmt->quality_max ? output_quality : fmt->quality_default);
     const std::string tCropText = Trim(comboCrop);
     long tCropNum;
-    const std::string tCrop = ParseInt(tCropText, tCropNum) && (tCropNum == 0 || (tCropNum >= 32 && tCropNum <= 65536)) ? tCropText : "0";
+    const std::string tCrop = ParseInt(tCropText, tCropNum) && (tCropNum >= 0 && tCropNum <= 65536) ? tCropText : "0";
 
     ini.Set(S, "LastScaleMode", tScaleMode);
     ini.Set(S, "LastScale", scale_ratio > 0.0 ? Format("%.2f", scale_ratio) : "1.00");
@@ -709,6 +761,18 @@ void DialogEvent::SaveIni(const bool isSyncMember)
     ini.Set(S, "LastSyncGap", std::to_string(syncgap));
     ini.Set(S, "LastVramPercent", std::to_string(vramPercent));
     ini.Set(S, "LastRamPercent", std::to_string(ramPercent));
+    ini.Set(S, "LastNonAIFilter", g_nonAiFilters[std::min(NonAiFilterCount - 1, std::max(0, nonAiFilter))].cli);
+    ini.Set(S, "LastLanczosTaps", std::to_string(lanczosTaps));
+    ini.Set(S, "LastJincTaps", std::to_string(jincTaps));
+    ini.Set(S, "LastNonAIAntiRinging", AntiRingingCli[std::min(2, std::max(0, nonAiAR))]);
+    ini.Set(S, "LastNonAILinearLight", nonAiLinear ? "1" : "0");
+    ini.Set(S, "LastPostFilter", g_postFilters[std::min(PostFilterCount - 1, std::max(0, postFilter))].key);
+    ini.Set(S, "LastPostAntiRinging", AntiRingingCli[std::min(2, std::max(0, postAR))]);
+    ini.Set(S, "LastPostLinearLight", postLinear ? "1" : "0");
+    ini.Set(S, "LastPreDeband", DebandCli[std::min(3, std::max(0, preDeband))]);
+    ini.Set(S, "LastPostDither", DitherCli[std::min(2, std::max(0, postDither))]);
+    ini.Set(S, "LastNonAIDeband", DebandCli[std::min(3, std::max(0, nonAiDeband))]);
+    ini.Set(S, "LastNonAIDither", DitherCli[std::min(2, std::max(0, nonAiDither))]);
     {
         const FileBrowser::Prefs& bp = fileBrowser.prefs;
         ini.Set(S, "LastBrowserSort", std::to_string(bp.sortColumn));
@@ -1046,10 +1110,10 @@ void DialogEvent::HandleEvents()
             else if (c[0] == "TILEFIT")
                 AddLogMessage(Format(T("Split size %s needs more GPU memory than the limit allows: %s is used instead").c_str(), c[2].c_str(), c[3].c_str()));
             else if (c[0] == "RETRY")
-                AddLogMessage(Format(T("%s: out of GPU memory, retry %s of 3 with 1 thread and Split size %s").c_str(), FileName(c[1]).c_str(), c[2].c_str(), c[3].c_str()));
+                AddLogMessage(Format(T("%s: GPU error, retry %s of 2 with 1 thread and Split size %s").c_str(), FileName(c[1]).c_str(), c[2].c_str(), c[3].c_str()));
             else
             {
-                AddLogMessage(Format(T("%s still ran out of GPU memory after 3 retries. The conversion was stopped: lower the Split size or Thread(s), or raise the GPU memory limit in Preferences.").c_str(), FileName(c[1]).c_str()));
+                AddLogMessage(Format(T("%s still failed after 2 retries. The conversion was stopped: lower the Split size or Thread(s), or raise the GPU memory limit in Preferences.").c_str(), FileName(c[1]).c_str()));
                 isLastError = true;
             }
             break;
@@ -1163,11 +1227,13 @@ void DialogEvent::Exec()
         MessageBox(Format(L2("MessageExeNotFound", "repicturer-cli was not found:\n%s").c_str(), CliPath().c_str()), errTitle, IconError);
         return;
     }
-    if (modelType < 0 || modelType >= (int)models.size())
+    const bool nonAI = mode == eModeNonAI;
+    if (!nonAI && (modelType < 0 || modelType >= (int)models.size()))
     {
         MessageBox(L("MessageFailedOpenModelFileError"), errTitle, IconError);
         return;
     }
+    if (!nonAI)
     {
         // the model must have the networks the selected mode needs
         const ModelEntry& m = models[modelType];
@@ -1206,8 +1272,8 @@ void DialogEvent::Exec()
     job.listPath = JoinPath(GetTempDir(), Format("repicturer-%lu-%d.txt", pid, ++counter));
 
     std::vector<std::string>& a = job.args;
-    a.push_back("-M"); a.push_back(modeStr);
-    a.push_back("-n"); a.push_back(std::to_string(noise_level));
+    a.push_back("-M"); a.push_back(CliModeName());
+    if (!nonAI) { a.push_back("-n"); a.push_back(std::to_string(noise_level)); }
     if (mode != eModeNoise)
     {
         switch (scaleType)
@@ -1221,8 +1287,30 @@ void DialogEvent::Exec()
             break;
         }
     }
-    a.push_back("-m"); a.push_back(model_dir);
-    if (models[modelType].engine == EngineRealCUGAN) { a.push_back("-c"); a.push_back(std::to_string(syncgap)); }
+    if (nonAI)
+    {
+        // Non-AI Scale: the filter of the main window, linear light from Non-AI Filters Settings
+        const NonAiFilterInfo& fi = g_nonAiFilters[std::min(NonAiFilterCount - 1, std::max(0, nonAiFilter))];
+        a.push_back("-F"); a.push_back(fi.cli);
+        if (fi.taps) { a.push_back("-T"); a.push_back(std::to_string(fi.taps == 1 ? lanczosTaps : jincTaps)); }
+        a.push_back("-a"); a.push_back(AntiRingingCli[fi.rings ? std::min(2, std::max(0, nonAiAR)) : 0]);
+        if (nonAiLinear) a.push_back("--linear-light");
+        a.push_back("--deband"); a.push_back(DebandCli[std::min(3, std::max(0, nonAiDeband))]);
+        a.push_back("--dither"); a.push_back(DitherCli[std::min(2, std::max(0, nonAiDither))]);
+    }
+    else
+    {
+        a.push_back("-m"); a.push_back(model_dir);
+        if (models[modelType].engine == EngineRealCUGAN) { a.push_back("-c"); a.push_back(std::to_string(syncgap)); }
+        // Post-AI Conversion Settings: the resize of the AI result to the exact output size
+        const PostFilterInfo& pf = g_postFilters[std::min(PostFilterCount - 1, std::max(0, postFilter))];
+        a.push_back("-F"); a.push_back(pf.cli);
+        if (pf.taps) { a.push_back("-T"); a.push_back(std::to_string(pf.taps)); }
+        a.push_back("-a"); a.push_back(AntiRingingCli[pf.rings ? std::min(2, std::max(0, postAR)) : 0]);
+        if (postLinear) a.push_back("--linear-light");
+        a.push_back("--deband"); a.push_back(DebandCli[std::min(3, std::max(0, preDeband))]);   // before the AI
+        a.push_back("--dither"); a.push_back(DitherCli[std::min(2, std::max(0, postDither))]);  // the final resize
+    }
     a.push_back("--vram-percent"); a.push_back(std::to_string(vramPercent));
     a.push_back("--ram-percent"); a.push_back(std::to_string(ramPercent));
 
@@ -1230,9 +1318,9 @@ void DialogEvent::Exec()
     if (process == "cpu") gpuArg = "-1";
     else if (gpu_no >= 0) gpuArg = std::to_string(gpu_no);
     const std::string tileArg = std::to_string(crop_size);
-    const std::string procArg = std::to_string(models[modelType].heavy ? 1 : batch_size); // heavy models: one image at a time
+    const std::string procArg = std::to_string(!nonAI && models[modelType].heavy ? 1 : batch_size); // heavy models: one image at a time
     if (!gpuArg.empty()) { a.push_back("-g"); a.push_back(gpuArg); }
-    a.push_back("-t"); a.push_back(tileArg);
+    if (!nonAI) { a.push_back("-t"); a.push_back(tileArg); } // the filters need no split size
     a.push_back("-j"); a.push_back(std::to_string(loadThreads) + ":" + procArg + ":" + std::to_string(saveThreads));
     if (output_quality >= 0) { a.push_back("-q"); a.push_back(std::to_string(output_quality)); }
     if (isOutputNoOverwrite) a.push_back("-k");
@@ -1297,6 +1385,17 @@ void DialogEvent::RequestClose()
 #ifdef _WIN32
         MessageBeep(MB_ICONEXCLAMATION);
 #endif
+    }
+}
+
+std::string DialogEvent::CliModeName() const
+{
+    switch (mode)
+    {
+    case eModeNoise: return "denoise";
+    case eModeScale: return "scale";
+    case eModeNonAI: return "non-ai-scale";
+    default: return "denoise-scale";
     }
 }
 
@@ -1627,6 +1726,14 @@ void DialogEvent::AppSetting()
     CopyStr(app.outputDirFix, sizeof(app.outputDirFix), tOutputDirFix);
     app.customDirs = useCustomDirs;
     app.syncgap = syncgap;
+    app.postFilter = postFilter;
+    app.postAR = postAR;
+    app.postLinear = postLinear;
+    app.nonAiLinear = nonAiLinear;
+    app.preDeband = preDeband;
+    app.postDither = postDither;
+    app.nonAiDeband = nonAiDeband;
+    app.nonAiDither = nonAiDither;
     app.vramPercent = vramPercent;
     app.ramPercent = ramPercent;
     snprintf(app.vramText, sizeof(app.vramText), "%d", vramPercent);
@@ -1678,7 +1785,7 @@ bool DialogEvent::CheckSettingFile(bool& missing) const
             for (int i = 0; i < g_output_format_count; i++) if (v == std::string(".") + g_output_formats[i].ext) return true;
             return false;
         }},
-        {"LastMode", [&](const std::string& v) { return oneOf(v, {"noise", "scale", "noise_scale", "auto_scale"}); }}, // auto_scale: older versions
+        {"LastMode", [&](const std::string& v) { return oneOf(v, {"noise", "scale", "noise_scale", "non-ai-scale", "auto_scale"}); }}, // auto_scale: older versions
         {"LastNoiseLevel", [](const std::string& v) { return IsIntIn(v, 0, 3); }},
         {"LastProcess", [&](const std::string& v) { return oneOf(v, {"gpu", "cpu"}); }},
         {"LastModelType", [this](const std::string& v) {
@@ -1697,10 +1804,28 @@ bool DialogEvent::CheckSettingFile(bool& missing) const
         {"LastOutputDirFix", [](const std::string&) { return true; }},
         {"LastUseCustomDirs", bool01},
         {"LastBatchSize", [](const std::string& v) { return IsIntIn(v, 1, 1024); }},
-        {"LastCropSize", [](const std::string& v) { return v == "0" || IsIntIn(v, 32, 65536); }},
+        {"LastCropSize", [](const std::string& v) { return v == "0" || IsIntIn(v, 1, 65536); }},
         {"LastSyncGap", [](const std::string& v) { return IsIntIn(v, 0, 3); }},
         {"LastVramPercent", [](const std::string& v) { return IsIntIn(v, 10, 80); }},
         {"LastRamPercent", [](const std::string& v) { return IsIntIn(v, 10, 80); }},
+        {"LastNonAIFilter", [](const std::string& v) {
+            for (const auto& fi : g_nonAiFilters) if (v == fi.cli) return true;
+            return false;
+        }},
+        {"LastLanczosTaps", [&](const std::string& v) { return oneOf(v, {"2", "3", "4", "8"}); }},
+        {"LastJincTaps", [&](const std::string& v) { return oneOf(v, {"3", "4", "8"}); }},
+        {"LastNonAIAntiRinging", [&](const std::string& v) { return oneOf(v, {"off", "relaxed", "strict"}); }},
+        {"LastNonAILinearLight", bool01},
+        {"LastPostFilter", [](const std::string& v) {
+            for (const auto& pf : g_postFilters) if (v == pf.key) return true;
+            return false;
+        }},
+        {"LastPostAntiRinging", [&](const std::string& v) { return oneOf(v, {"off", "relaxed", "strict"}); }},
+        {"LastPostLinearLight", bool01},
+        {"LastPreDeband", [&](const std::string& v) { return oneOf(v, {"off", "low", "medium", "high"}); }},
+        {"LastPostDither", [&](const std::string& v) { return oneOf(v, {"off", "ordered", "error-diffusion"}); }},
+        {"LastNonAIDeband", [&](const std::string& v) { return oneOf(v, {"off", "low", "medium", "high"}); }},
+        {"LastNonAIDither", [&](const std::string& v) { return oneOf(v, {"off", "ordered", "error-diffusion"}); }},
         {"LastBrowserSort", [](const std::string& v) { return IsIntIn(v, 0, 1); }},
         {"LastBrowserSortDesc", bool01},
         {"LastBrowserFolderIn", [](const std::string&) { return true; }},
@@ -1832,6 +1957,28 @@ void DialogEvent::Create(int argc, char** argv)
     vramPercent = std::min(80, std::max(20, ini.GetInt(S, "LastVramPercent", 60)));
     ramPercent = std::min(80, std::max(20, ini.GetInt(S, "LastRamPercent", 60)));
     {
+        auto arIndex = [](const std::string& v) { return v == "strict" ? 2 : v == "relaxed" ? 1 : 0; };
+        const std::string tf = ini.Get(S, "LastNonAIFilter", g_nonAiFilters[DefaultNonAiFilter].cli);
+        nonAiFilter = DefaultNonAiFilter;
+        for (int i = 0; i < NonAiFilterCount; i++) if (tf == g_nonAiFilters[i].cli) nonAiFilter = i;
+        const int lt = ini.GetInt(S, "LastLanczosTaps", 3), jt = ini.GetInt(S, "LastJincTaps", 3);
+        lanczosTaps = lt == 2 || lt == 4 || lt == 8 ? lt : 3;
+        jincTaps = jt == 4 || jt == 8 ? jt : 3;
+        nonAiAR = arIndex(ini.Get(S, "LastNonAIAntiRinging", "off"));
+        nonAiLinear = ini.GetInt(S, "LastNonAILinearLight", 0) != 0;
+        const std::string tp = ini.Get(S, "LastPostFilter", g_postFilters[0].key);
+        postFilter = 0;
+        for (int i = 0; i < PostFilterCount; i++) if (tp == g_postFilters[i].key) postFilter = i;
+        postAR = arIndex(ini.Get(S, "LastPostAntiRinging", "off"));
+        postLinear = ini.GetInt(S, "LastPostLinearLight", 0) != 0;
+        auto debandIndex = [](const std::string& v) { return v == "high" ? 3 : v == "medium" ? 2 : v == "low" ? 1 : 0; };
+        auto ditherIndex = [](const std::string& v) { return v == "error-diffusion" ? 2 : v == "ordered" ? 1 : 0; };
+        preDeband = debandIndex(ini.Get(S, "LastPreDeband", "off"));
+        postDither = ditherIndex(ini.Get(S, "LastPostDither", "off"));
+        nonAiDeband = debandIndex(ini.Get(S, "LastNonAIDeband", "off"));
+        nonAiDither = ditherIndex(ini.Get(S, "LastNonAIDither", "off"));
+    }
+    {
         // the explorer (FileBrowser) as it was left
         FileBrowser::Prefs& bp = fileBrowser.prefs;
         bp.sortColumn = std::min(1, std::max(0, ini.GetInt(S, "LastBrowserSort", 0)));
@@ -1865,7 +2012,8 @@ void DialogEvent::Create(int argc, char** argv)
 
     radioNoise = noise_level;
 
-    if (tmode == "noise") radioMode = 2;
+    if (tmode == "non-ai-scale") radioMode = 3;
+    else if (tmode == "noise") radioMode = 2;
     else if (tmode == "scale") radioMode = 1;
     else radioMode = 0; // noise_scale (also the removed auto_scale of older versions)
 
@@ -2166,7 +2314,8 @@ namespace
 
     // previewText: what the closed box shows instead of the selected item (nullptr = the item)
     bool Combo(const char* id, int* cur, const std::vector<std::string>& items, float x, float y, float w, bool enabled = true,
-               const std::string* previewText = nullptr, const std::vector<std::string>* shortItems = nullptr)
+               const std::string* previewText = nullptr, const std::vector<std::string>* shortItems = nullptr,
+               const std::vector<std::string>* itemTips = nullptr)
     {
         At(x, y, 14);
         ImGui::SetNextItemWidth(W(w));
@@ -2186,6 +2335,7 @@ namespace
             for (int i = 0; i < (int)items.size(); i++)
             {
                 if (ImGui::Selectable(items[i].c_str(), i == *cur)) { if (*cur != i) changed = true; *cur = i; }
+                if (itemTips && i < (int)itemTips->size() && ImGui::IsItemHovered()) TooltipText("%s", (*itemTips)[i].c_str());
                 if (i == *cur) ImGui::SetItemDefaultFocus();
             }
             ImGui::PopStyleVar();
@@ -2347,6 +2497,13 @@ std::string DialogEvent::TranslatePlan(std::string d) const
 {
     const std::string nonet = "no network";
     if (d.rfind(nonet, 0) == 0) d = T(nonet.c_str()) + d.substr(nonet.size());
+    if (d.rfind("filter ", 0) == 0)
+    {
+        const size_t e = d.find(' ', 7);
+        const std::string cli = d.substr(7, e == std::string::npos ? std::string::npos : e - 7);
+        for (const auto& fi : g_nonAiFilters)
+            if (cli == fi.cli) d = T("Filter") + ": " + T(fi.title) + (e == std::string::npos ? std::string() : d.substr(e));
+    }
     const size_t r = d.find("resize ");
     if (r == std::string::npos) return d;
     const size_t to = d.find(" to ", r);
@@ -2599,28 +2756,75 @@ void DialogEvent::DrawMain(float s)
     const bool scaleOnly = cm && canMagnify && (builtIn || !canDenoise);
     const bool denoiseOnly = cm && !canMagnify && canDenoise;
     std::string onlyTip;
-    if (builtIn && canMagnify) onlyTip = Format(T("%s only allows scaling conversion, denoising is always turned on by default.").c_str(), modelName.c_str());
-    else if (scaleOnly) onlyTip = Format(T("%s only allows scaling conversion, it has no denoising.").c_str(), modelName.c_str());
-    else if (denoiseOnly) onlyTip = Format(T("%s only allows denoising, it has no scaling.").c_str(), modelName.c_str());
+    if (builtIn && canMagnify) onlyTip = Format(T("%s only works with AI Scale Only: its noise removal is built in and always on.").c_str(), modelName.c_str());
+    else if (scaleOnly) onlyTip = Format(T("%s only works with AI Scale Only: it has no noise removal.").c_str(), modelName.c_str());
+    else if (denoiseOnly) onlyTip = Format(T("%s only works with AI Denoise Only: it cannot enlarge pictures.").c_str(), modelName.c_str());
     auto onlyModeTip = [&]() {
         if (!onlyTip.empty() && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) TooltipText("%s", onlyTip.c_str());
     };
     GroupBox(L("IDC_STATIC_TRANS_MODE"), 13, 108, 121, 76);
     bool modeChanged = false;
-    modeChanged |= Radio(L("IDC_RADIO_MODE_NOISE_SCALE"), "m0", &radioMode, 0, 21, 124, canDenoise && canMagnify && !builtIn);
+    // Non-AI Scale selected: the AI options are not locked to the model (it is not used)
+    const bool wasNonAI = radioMode == 3;
+    modeChanged |= Radio(L("IDC_RADIO_MODE_NOISE_SCALE"), "m0", &radioMode, 0, 21, 121, canDenoise && canMagnify && !builtIn);
     onlyModeTip();
-    modeChanged |= Radio(L("IDC_RADIO_MODE_SCALE"), "m1", &radioMode, 1, 21, 143, canMagnify, 0, scaleOnly);
+    modeChanged |= Radio(L("IDC_RADIO_MODE_SCALE"), "m1", &radioMode, 1, 21, 137, canMagnify, 0, scaleOnly && !wasNonAI);
     onlyModeTip();
-    modeChanged |= Radio(L("IDC_RADIO_MODE_NOISE"), "m2", &radioMode, 2, 21, 162, canDenoise && !builtIn, 0, denoiseOnly);
+    modeChanged |= Radio(L("IDC_RADIO_MODE_NOISE"), "m2", &radioMode, 2, 21, 153, canDenoise && !builtIn, 0, denoiseOnly && !wasNonAI);
     if (!onlyTip.empty()) onlyModeTip();
     else if (isEsrgan && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-        TooltipText("%s", Format(L2("TipModelDenoiseOnly", "%s: the image is cleaned up at the network scale and shrunk back to the original size").c_str(), modelName.c_str()).c_str());
+        TooltipText("%s", Format(L2("TipModelDenoiseOnly", "%s: to clean the picture, the model enlarges it and then shrinks it back to its original size").c_str(), modelName.c_str()).c_str());
+    modeChanged |= Radio(L2("IDC_RADIO_MODE_NON_AI", "Non-AI Scale"), "m3", &radioMode, 3, 21, 169, true);
+    if (ImGui::IsItemHovered())
+        TooltipText("%s", T("A classic resize with the filter you choose, without AI: fast and true to the original, nothing is added.\n"
+            "Good for pixel art (Nearest Neighbor), quick resizes and making pictures smaller.").c_str());
 
-    if (modeChanged) OnModeChange();
+    if (modeChanged)
+    {
+        if (wasNonAI && radioMode != 3) FixModeForModel(); // back to the AI: the model's own limits again
+        OnModeChange();
+    }
 
-    const bool isNoise = radioMode != 1;
+    const bool nonAI = radioMode == 3;
+    const bool isNoise = radioMode == 0 || radioMode == 2;
     const bool isScale = radioMode != 2;
+    const NonAiFilterInfo& nf = g_nonAiFilters[std::min(NonAiFilterCount - 1, std::max(0, nonAiFilter))];
+    const std::string nfTitle = T(nf.title);
 
+    if (nonAI)
+    {
+        // Non-AI Scale: the taps of Lanczos (2 / 3 / 4 / 8) and Jinc (3 / 4 / 8) in place of the denoise level
+        GroupBox(T("Taps"), 139, 109, 65, 75);
+        static const int tapValues[4] = {2, 3, 4, 8};
+        int* taps = nf.taps == 1 ? &lanczosTaps : nf.taps == 2 ? &jincTaps : nullptr;
+        int sel = -1;
+        for (int k = 0; k < 4; k++) if (taps && *taps == tapValues[k]) sel = k;
+        static const char* ids[4] = {"t0", "t1", "t2", "t3"};
+        for (int k = 0; k < 4; k++)
+        {
+            const bool en = taps && !(nf.taps == 2 && k == 0);
+            if (Radio(Format(T("%d-tap").c_str(), tapValues[k]), ids[k], &sel, k, 148, 121.f + 16.f * k, en) && taps)
+            {
+                *taps = tapValues[sel];
+                ReplaceAddString();
+            }
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            {
+                if (!taps)
+                    TooltipText("%s", Format(T("%s has no taps setting.").c_str(), nfTitle.c_str()).c_str());
+                else if (nf.taps == 2 && k == 0)
+                    TooltipText("%s", T("Jinc has no 2-tap version.").c_str());
+                else if (nf.taps == 1)
+                    TooltipText("%s", T("Lanczos: how many neighbouring pixels it looks at on each side. More taps = sharper, but more halos (thin light or dark outlines along edges).\n"
+                        "2-tap: soft, 3-tap: the usual choice, 4-tap: sharper, 8-tap: the sharpest, with the most halos.").c_str());
+                else
+                    TooltipText("%s", T("Jinc: how far around each pixel it looks. More taps = sharper, but more halos and slower.\n"
+                        "3-tap: the usual choice, 4-tap: sharper, 8-tap: the sharpest and much slower.").c_str());
+            }
+        }
+    }
+    else
+    {
     // models with detail levels (NMKD Siax): "Detail level" with its own four options, in every mode
     const bool detailLevels = cm && cm->HasDetailLevels();
     GroupBox(detailLevels ? T("Detail level") : L("IDC_STATIC_JPEG_NOISE_LEVEL"), 139, 109, 65, 75);
@@ -2636,29 +2840,30 @@ void DialogEvent::DrawMain(float s)
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
         {
             if (detailLevels)
-                TooltipText("%s", Format(T("%s: the detail level blends it with ESRGAN PSNR, the soft model it was trained from\n"
-                    "Faithful = 40 %%, Balanced = 60 %%, Detailed = 80 %%, Maximum = 100 %% (plain %s). Used in every mode").c_str(),
+                TooltipText("%s", Format(T("%s: the detail level mixes it with a softer version of the same model. Lower = softer and closer to the original, higher = more detail.\n"
+                    "Faithful = 40 %%, Balanced = 60 %%, Detailed = 80 %%, Maximum = 100 %% (only %s). Works in every mode").c_str(),
                     modelName.c_str(), modelName.c_str()).c_str());
             else if (esrLevels && cm->type == "lsdir-compact")
                 TooltipText("%s", T("LSDIR Compact: the level sets how much it cleans up\n"
-                    "Level 0 = JPEG only, Level 1-2 = more, Level 3 = blur, noise and JPEG (Scale only = no cleanup, most detail)").c_str());
+                    "Level 0 = JPEG blocks only, Level 1-2 = more, Level 3 = also blur and noise (AI Scale Only = no cleanup, the most detail)").c_str());
             else if (esrLevels)
-                TooltipText("%s", T("Real-ESRGAN General: the level sets the denoise strength\n"
-                    "Level 0 = 25 %, Level 1 = 50 %, Level 2 = 75 %, Level 3 = 100 % (Scale only = weakest)").c_str());
+                TooltipText("%s", T("Real-ESRGAN General: the level sets how strongly it removes noise\n"
+                    "Level 0 = 25 %, Level 1 = 50 %, Level 2 = 75 %, Level 3 = 100 % (AI Scale Only = the weakest)").c_str());
             else if (isEsrgan)
-                TooltipText("%s", Format(L2("TipModelNoNoise", "%s removes noise / JPEG artifacts / blur by itself; there is no denoise level").c_str(), modelName.c_str()).c_str());
+                TooltipText("%s", Format(L2("TipModelNoNoise", "%s removes noise, JPEG blocks and blur on its own; there is no level to set").c_str(), modelName.c_str()).c_str());
             else if (cm && !canDenoise)
-                TooltipText("%s", Format(T("%s only allows scaling conversion, it has no denoising.").c_str(), modelName.c_str()).c_str());
+                TooltipText("%s", Format(T("%s only works with AI Scale Only: it has no noise removal.").c_str(), modelName.c_str()).c_str());
             else if (isCugan && lv == 0)
-                TooltipText("%s", L2("TipCuganLevel0", "Real-CUGAN: Level 0 = conservative (keeps the most original detail)").c_str());
+                TooltipText("%s", L2("TipCuganLevel0", "Real-CUGAN: Level 0 = conservative: it removes the least and keeps the most original detail").c_str());
             else if (lv == 0)
-                TooltipText("%s", L2("TipLevel0", "Level 0 is the lightest denoise: on clean images the difference is small.\n"
-                    "Use Level 1-3 for visible noise or JPEG artifacts.").c_str());
+                TooltipText("%s", L2("TipLevel0", "Level 0 is the lightest noise removal: on clean pictures you will hardly see a difference.\n"
+                    "Use Level 1-3 for visible noise or JPEG blocks.").c_str());
             else if (cm && !cm->NoiseLevelAvailable(lv))
-                TooltipText("%s", L2("TipLevelMissing", "this model has no network for this denoise level").c_str());
+                TooltipText("%s", L2("TipLevelMissing", "this model has no version for this denoise level").c_str());
         }
     }
     if (noiseChanged) ReplaceAddString();
+    }
 
     GroupBox(L("IDC_STATIC_SCALE_RATE"), 209, 109, 155, 75);
     bool scaleChanged = false;
@@ -2727,6 +2932,22 @@ void DialogEvent::DrawMain(float s)
             TooltipText("%s", T("Enter your desired <Width> and <Height> values in two text fields above.").c_str());
     }
 
+    if (nonAI)
+    {
+        // Non-AI Scale: the filter in place of the model
+        GroupBox(T("Filter"), 368, 109, 130, 37);
+        std::vector<std::string> items, tips;
+        for (const auto& fi : g_nonAiFilters) { items.push_back(T(fi.title)); tips.push_back(T(fi.tip)); }
+        g_nextListMinW = W(130);
+        if (Combo("##filter", &nonAiFilter, items, 372, 123, 110, true, nullptr, nullptr, &tips)) ReplaceAddString();
+        if (ImGui::IsItemHovered() && !ImGui::IsPopupOpen("##filter"))
+            TooltipText("%s", (nfTitle + "\n" + T(nf.tip)).c_str());
+        if (HelpButton("filterhelp", 483, 123, 13)) filterHelpRequest = true;
+        if (ImGui::IsItemHovered())
+            TooltipText("%s", T("Which filter for which picture? Every filter explained").c_str());
+    }
+    else
+    {
     GroupBox(L("IDC_STATIC_MODEL"), 368, 109, 130, 37);
     {
         std::vector<std::string> items;
@@ -2759,6 +2980,7 @@ void DialogEvent::DrawMain(float s)
         if (ImGui::IsItemHovered())
             TooltipText("%s", L2("TipModelHelp", "Which model for which picture? Every model explained").c_str());
     }
+    }
 
     // ncnn: device selection (vulkan gpu / cpu) right on the main window
     GroupBox(L2("IDC_STATIC_DEVICE", "Processing Unit"), 368, 147, 130, 37);
@@ -2774,38 +2996,70 @@ void DialogEvent::DrawMain(float s)
         }
         if (Combo("##device", &idx, items, 372, 161, 122, true, nullptr, &shortItems)) SetDeviceFromCombo(idx);
         if (!ImGui::IsPopupOpen("##device") && (ImGui::IsItemHovered() || HoverRect(368, 147, 130, 37)))
-            TooltipText("%s", L2("TipProcessingUnit", "Which part of the computer runs the AI.\n"
-                "GPU (graphics card): runs on Vulkan - fast. Works with NVIDIA, AMD and Intel, no CUDA needed.\n"
-                "CPU (processor): works without Vulkan - much slower, but on any computer.\n"
-                "Auto: the GPU, or the CPU when no GPU with Vulkan is found.").c_str());
+            TooltipText("%s", L2("TipProcessingUnit", "Which part of the computer does the work.\n"
+                "GPU (graphics card): fast. Works with NVIDIA, AMD and Intel cards that support Vulkan; no CUDA needed.\n"
+                "CPU (processor): much slower, but works on any computer.\n"
+                "Auto: the GPU, or the CPU if no suitable graphics card is found.").c_str());
     }
 
     // ---- Split size / Thread(s): two equal boxes right of Model / Device, the same height, controls centred in them
 
+    if (nonAI)
+    {
+        // Non-AI Scale: Anti-Ringing in place of the split size (the filters need none). A filter without halos shows
+        // Off, greyed out; the choice is kept and comes back with a filter that has halos
+        GroupBox(T("Anti-Ringing"), 503, 109, 72, 37);
+        std::vector<std::string> items = {T("Off"), T("Relaxed"), T("Strict (Soft)")};
+        // the closed box: the short form when the full name does not fit (the list shows the full names)
+        const std::vector<std::string> shortItems = {T("Off"), T("Relaxed"), T("Strict")};
+        int shown = nf.rings ? std::min(2, std::max(0, nonAiAR)) : 0;
+        g_nextListMinW = W(80);
+        if (Combo("##antiring", &shown, items, 507, 123, 64, nf.rings, nullptr, &shortItems) && nf.rings)
+        {
+            nonAiAR = shown;
+            ReplaceAddString();
+        }
+        if (HoverRect(503, 109, 72, 37) && !ImGui::IsPopupOpen("##antiring"))
+        {
+            std::string tip = T("Removes the halos (thin light or dark outlines) that sharp filters leave along hard edges.");
+            if (!nf.rings && nonAiFilter == DefaultNonAiFilter)
+                tip += "\n" + T("Not available with Bicubic Mitchell: it creates almost no halos, so there is nothing to remove.");
+            else if (!nf.rings)
+                tip += "\n" + Format(T("Not available with %s: it creates no halos, so there is nothing to remove.").c_str(), nfTitle.c_str());
+            else
+                tip += "\n" + T("Off: no change. Relaxed: removes most halos and keeps the picture sharp. "
+                    "Strict (Soft): removes all halos, but the picture becomes a little softer.");
+            TooltipText("%s", tip.c_str());
+        }
+    }
+    else
+    {
     GroupBox(L("IDC_STATIC_CROP_SIZE"), 503, 109, 72, 37);
     EditCombo("##crop", comboCrop, sizeof(comboCrop), cropItems, 507, 123, 46);
     if (HoverRect(503, 109, 50, 37))
-        TooltipText("%s", L2("TipCropSize", "Size of the pieces the image is cut into for the GPU.\n"
-            "0 = automatic from the free GPU memory (recommended).\n"
+        TooltipText("%s", L2("TipCropSize", "The AI cuts big pictures into square pieces of this size, so they fit in the graphics card's memory.\n"
+            "0 = automatic, based on the free graphics memory (recommended).\n"
+            "1 = no split: the whole picture in one piece.\n"
             "Bigger = a little faster but needs more memory. Click ? for details.").c_str());
     if (HelpButton("crophelp", 556, 123, 15)) speedHelpRequest = true;
     if (ImGui::IsItemHovered()) TooltipText("%s", L2("TipSpeedHelp", "What do Split size and Thread(s) do?").c_str());
+    }
 
     GroupBox(L2("IDC_STATIC_PROC_THREADS", "Thread(s)"), 503, 147, 72, 37);
     {
         std::vector<std::string> items;
         for (int i = 1; i <= MaxBatchSizeList; i++) items.push_back(std::to_string(i));
         // heavy models: greyed out and shown as 1 (the user's value is kept for the other models)
-        const bool heavy = cm && cm->heavy;
+        const bool heavy = cm && cm->heavy && !nonAI;
         char one[4] = "1";
         if (heavy) EditCombo("##batch", one, sizeof(one), items, 507, 161, 46, false);
         else EditCombo("##batch", comboBatch, sizeof(comboBatch), items, 507, 161, 46);
         if (heavy && HoverRect(503, 147, 50, 37))
             TooltipText("%s", Format(T("Thread(s) is locked at 1 for heavy models like %s:\n"
-                "each GPU converts one image at a time, so it does not run out of GPU memory").c_str(), modelName.c_str()).c_str());
+                "the graphics card converts one picture at a time, so it does not run out of memory").c_str(), modelName.c_str()).c_str());
         else if (HoverRect(503, 147, 50, 37))
-            TooltipText("%s", L2("TipThreads", "GPU: how many images are converted at the same time (helps folders / many files).\n"
-                "CPU fallback: how many CPU cores are used.\n"
+            TooltipText("%s", L2("TipThreads", "GPU: how many pictures are converted at the same time (helps with folders and many files).\n"
+                "CPU: how many processor cores are used.\n"
                 "Default 2. Click ? for details.").c_str());
         if (HelpButton("threadhelp", 556, 161, 15)) speedHelpRequest = true;
         if (ImGui::IsItemHovered()) TooltipText("%s", L2("TipSpeedHelp", "What do Split size and Thread(s) do?").c_str());
@@ -2965,26 +3219,30 @@ void DialogEvent::DrawAppSetting(float s)
         RowLabel("%", x + 29, y, x + 40);
     };
     // drawn inside its own os window (DrawModal); child with the dialog-unit coordinate system of IDD_DIALOG_APP_SETTING
-    ImGui::BeginChild("##appsetbody", ImVec2(W(309), H(239)), 0, ImGuiWindowFlags_NoScrollbar);
+    ImGui::BeginChild("##appsetbody", ImVec2(W(309), H(431)), 0, ImGuiWindowFlags_NoScrollbar);
 
 
     // rows of 14 with a gap of 5; label column 7-75 (vertically centred on the field), fields from 77
 
     // Input and Output Settings: no overwrite, then the custom folders (off by default = the main window's paths;
     // on with a field left empty = the main window's path for that one), greyed out and without hover while off
-    GroupBox(T("Input and Output Settings"), 7, 66, 295, 84);
-    Check(L("IDC_CHECK_OUTPUT_NO_OVERWRITE"), "noow", &app.noOverwrite, 14, 81, true, 298);
-    Check(T("Enable custom Input and Output folder paths"), "customdirs", &app.customDirs, 14, 95, true, 298);
+    GroupBox(T("Input and Output Settings"), 7, 258, 295, 84);
+    Check(L("IDC_CHECK_OUTPUT_NO_OVERWRITE"), "noow", &app.noOverwrite, 14, 273, true, 298);
+    if (ImGui::IsItemHovered() || HoverRect(14, 273, 284, 10))
+        TooltipText("%s", L2("TipNoOverwrite", "Checked: a picture whose output file already exists is skipped - it is not converted again and the existing\n"
+        "file is kept. The log lists every skipped picture. Handy to resume a folder conversion that was stopped.\n"
+        "Unchecked (default): existing output files are replaced.").c_str());
+    Check(T("Enable custom Input and Output folder paths"), "customdirs", &app.customDirs, 14, 287, true, 298);
     ImGui::BeginDisabled(!app.customDirs);
-    RowLabel(L("IDC_STATIC_INPUT_DIR_FIX"), 14, 111, 77);
-    Edit("##indirfix", app.inputDirFix, sizeof(app.inputDirFix), 79, 111, 195, 14);
-    if (InlineButton("...", "indirfixbtn", 278, 111, 20))
+    RowLabel(L("IDC_STATIC_INPUT_DIR_FIX"), 14, 303, 77);
+    Edit("##indirfix", app.inputDirFix, sizeof(app.inputDirFix), 79, 303, 195, 14);
+    if (InlineButton("...", "indirfixbtn", 278, 303, 20))
     {
         StartPicker(3, true, L("IDC_STATIC_INPUT_DIR_FIX"), app.inputDirFix);
     }
-    RowLabel(L("IDC_STATIC_OUTPUT_DIR_FIX"), 14, 130, 77);
-    Edit("##outdirfix", app.outputDirFix, sizeof(app.outputDirFix), 79, 130, 195, 14);
-    if (InlineButton("...", "outdirfixbtn", 278, 130, 20))
+    RowLabel(L("IDC_STATIC_OUTPUT_DIR_FIX"), 14, 322, 77);
+    Edit("##outdirfix", app.outputDirFix, sizeof(app.outputDirFix), 79, 322, 195, 14);
+    if (InlineButton("...", "outdirfixbtn", 278, 322, 20))
     {
         StartPicker(4, true, L("IDC_STATIC_OUTPUT_DIR_FIX"), app.outputDirFix);
     }
@@ -2992,7 +3250,7 @@ void DialogEvent::DrawAppSetting(float s)
 
     // Performance: the memory limits (reading / saving threads are fixed: 1 / 2)
     // Models Settings: options of one engine each, in a small box per engine
-    GroupBox(L2("IDC_STATIC_MODEL_SETTINGS", "Models Settings"), 7, 7, 295, 49);
+    GroupBox(L2("IDC_STATIC_MODEL_SETTINGS", "Models Settings"), 7, 7, 295, 169);
     GroupBox("Real-CUGAN", 14, 20, 281, 30);
     RowLabel(L2("IDC_STATIC_SYNCGAP", "Sync gap"), 21, 32, 115);
     {
@@ -3003,15 +3261,102 @@ void DialogEvent::DrawAppSetting(float s)
             L2("SyncGap3", "3 - very rough (default)")};
         Combo("##syncgap", &app.syncgap, items, 120, 32, 168);
         if (ImGui::IsItemHovered() || HoverRect(21, 32, 94, 14))
-            TooltipText("%s", L2("TipSyncGap", "Real-CUGAN only. A big picture is converted in pieces (the Split size); without this, neighbouring pieces "
-                "can differ slightly in tone (faint squares, e.g. in a sky). Sync gap gives all pieces the same colour measurements:\n"
+            TooltipText("%s", L2("TipSyncGap", "Real-CUGAN only. Big pictures are converted in pieces (see Split size). Without this, pieces next to each other can come out in slightly different tones (faint squares, e.g. in a sky). Sync gap makes all pieces use the same colour reference:\n"
                 "0 - off: fastest, pieces may differ.\n"
                 "1 - accurate: the best match, the slowest.\n"
                 "2 - rough: faster.\n"
                 "3 - very rough (default): fast and already seamless - keep this.").c_str());
     }
 
-    GroupBox(L2("IDC_STATIC_NCNN_ADVANCED", "Performance"), 7, 160, 295, 52);
+    // Post-AI Conversion Settings: the AI result is resized to the exact output size (e.g. 2.25x, Width x Height)
+    const std::string linearTip = T("Makes pictures smaller in linear light: the brightness stays right, so thin bright lines and dots do not turn darker.\n"
+        "Only used when the picture gets smaller (no side gets bigger). When enlarging it would make halos stronger, so it is skipped. Default: off.");
+    const std::string arTipHead = T("Removes the halos (thin light or dark outlines) that sharp filters leave along hard edges.");
+    const std::vector<std::string> arItems = {T("Off"), T("Relaxed"), T("Strict (Soft)")};
+    // Color Debanding and Dithering: the same lists and tooltips in both boxes
+    const std::vector<std::string> debandItems = {T("Off"), T("Low"), T("Medium"), T("High")};
+    const std::vector<std::string> debandTips = {
+        T("No change."),
+        T("Smooths narrow bands (up to about 16 pixels wide). The safest choice."),
+        T("Also smooths wider bands (up to about 50 pixels wide)."),
+        T("Also smooths very wide bands (up to about 130 pixels wide), e.g. a big sky. Can soften very faint shading.")};
+    const std::string debandTip = T("Smooths away colour banding: visible steps instead of a smooth fade, in skies, shadows and soft gradients\n"
+        "(common in game art, old 3D renders and heavily compressed JPGs). Only flat areas change; edges, lines and texture stay as they are.\n"
+        "Low: narrow bands, Medium: wider bands, High: also very wide bands. Default: Off.");
+    const std::vector<std::string> ditherItems = {T("Off"), T("Ordered"), T("Error Diffusion")};
+    const std::vector<std::string> ditherTips = {
+        T("No dithering: no grain, but smooth gradients can show visible steps."),
+        T("A fine, regular dot pattern: even grain."),
+        T("Spreads the tiny colour differences over the next pixels: the smoothest, most natural-looking result.")};
+    const std::string ditherTip = T("Saved pictures have 256 levels per colour, so a very smooth fade can turn into visible steps when a picture is resized.\n"
+        "Dithering hides those steps with a very fine grain, so gradients stay smooth. Only used when the picture is resized;\n"
+        "it cannot remove steps that are already in the picture (Color Debanding does that). Default: Off.");
+    // the 3 phases, under every Pre-AI / Post-AI Conversion tooltip
+    const std::string phasesTip = T("Every picture goes through 3 phases before it is saved:\n"
+        "1. Pre-AI Conversion: the original picture is prepared for the AI.\n"
+        "2. AI Conversion: the AI model enlarges and/or cleans up the picture. It can only enlarge in whole steps (2x, 3x or 4x).\n"
+        "3. Post-AI Conversion: the AI result is shrunk to the exact size you asked for (for example 2.25x, or a Width x Height).\n"
+        "This phase is skipped when you ask for exactly 2x, 3x or 4x.");
+
+    GroupBox(T("Pre-AI Conversion Settings"), 14, 54, 281, 30);
+    RowLabel(T("Color Debanding"), 21, 66, 115);
+    Combo("##predeband", &app.preDeband, debandItems, 120, 66, 168, true, nullptr, nullptr, &debandTips);
+    if (HoverRect(21, 66, 267, 14) && !ImGui::IsPopupOpen("##predeband"))
+        TooltipText("%s", (debandTip + "\n\n" + T("Here it runs in Pre-AI Conversion, so the bands are already smooth before AI Conversion.\n"
+            "If they were left in, the AI would sharpen them and make them stand out even more.") + "\n\n" + phasesTip).c_str());
+
+    GroupBox(T("Post-AI Conversion Settings"), 14, 88, 281, 82);
+    {
+        const std::string boxTip = T("These settings choose how Post-AI Conversion shrinks the picture to your exact size:\n"
+            "the resampling filter, its anti-ringing, dithering and linear light.\n"
+            "For 2.25x, for example, AI Conversion makes 4x and Post-AI Conversion shrinks it to 2.25x.") + "\n\n" + phasesTip;
+        RowLabel(T("Non-AI Downscaling Filter"), 21, 100, 115);
+        if (HoverRect(21, 100, 94, 14)) TooltipText("%s", boxTip.c_str());
+        std::vector<std::string> items, tips;
+        for (const auto& pf : g_postFilters) { items.push_back(T(pf.title)); tips.push_back(T(pf.tip)); }
+        Combo("##postfilter", &app.postFilter, items, 120, 100, 168, true, nullptr, nullptr, &tips);
+        const PostFilterInfo& pf = g_postFilters[std::min(PostFilterCount - 1, std::max(0, app.postFilter))];
+        if (ImGui::IsItemHovered() && !ImGui::IsPopupOpen("##postfilter"))
+            TooltipText("%s", (T(pf.title) + "\n" + T(pf.tip)).c_str());
+
+        RowLabel(T("Anti-Ringing Filter"), 21, 118, 115);
+        int shown = pf.rings ? std::min(2, std::max(0, app.postAR)) : 0;
+        if (Combo("##postar", &shown, arItems, 120, 118, 168, pf.rings) && pf.rings) app.postAR = shown;
+        if (HoverRect(21, 118, 267, 14) && !ImGui::IsPopupOpen("##postar"))
+            TooltipText("%s", (arTipHead + "\n" + (pf.rings
+                ? T("Off: no change. Relaxed: removes most halos and keeps the picture sharp. "
+                    "Strict (Soft): removes all halos, but the picture becomes a little softer.")
+                : T("Not available with Bicubic Mitchell: it creates almost no halos, so there is nothing to remove.")) + "\n\n"
+                + T("Used in Post-AI Conversion, together with the resampling filter.") + "\n\n" + phasesTip).c_str());
+
+        RowLabel(T("Dithering"), 21, 136, 115);
+        Combo("##postdither", &app.postDither, ditherItems, 120, 136, 168, true, nullptr, nullptr, &ditherTips);
+        if (HoverRect(21, 136, 267, 14) && !ImGui::IsPopupOpen("##postdither"))
+            TooltipText("%s", (ditherTip + "\n\n" + T("Used in Post-AI Conversion, when the AI result is shrunk to your exact size.")
+                + "\n\n" + phasesTip).c_str());
+
+        Check(T("Scale in linear light (Downscaling Only)"), "postlinear", &app.postLinear, 21, 154, true, 290);
+        if (ImGui::IsItemHovered() || HoverRect(21, 154, 267, 10))
+            TooltipText("%s", (linearTip + "\n\n" + T("Used in Post-AI Conversion, when the AI result is shrunk to your exact size\n"
+                "(for example, a 4x AI result shrunk to 2.25x).") + "\n\n" + phasesTip).c_str());
+    }
+
+    // Non-AI Filters Settings: the Non-AI Scale mode (its filter, taps and anti-ringing are in the main window)
+    GroupBox(T("Non-AI Filters Settings"), 7, 184, 295, 66);
+    RowLabel(T("Color Debanding"), 14, 198, 115);
+    Combo("##nonaideband", &app.nonAiDeband, debandItems, 120, 198, 175, true, nullptr, nullptr, &debandTips);
+    if (HoverRect(14, 198, 281, 14) && !ImGui::IsPopupOpen("##nonaideband"))
+        TooltipText("%s", (debandTip + "\n\n" + T("The Non-AI Scale mode has no AI: the bands are smoothed first, then the picture is resized\n"
+            "with the filter chosen in the main window. Smoothing first means the filter does not sharpen the bands.")).c_str());
+    RowLabel(T("Dithering"), 14, 216, 115);
+    Combo("##nonaidither", &app.nonAiDither, ditherItems, 120, 216, 175, true, nullptr, nullptr, &ditherTips);
+    if (HoverRect(14, 216, 281, 14) && !ImGui::IsPopupOpen("##nonaidither"))
+        TooltipText("%s", (ditherTip + "\n\n" + T("Used in the Non-AI Scale mode, when the picture is resized with the filter chosen in the main window.")).c_str());
+    Check(T("Scale in linear light (Downscaling Only)"), "nonailinear", &app.nonAiLinear, 14, 234, true, 298);
+    if (ImGui::IsItemHovered() || HoverRect(14, 234, 284, 10))
+        TooltipText("%s", (linearTip + "\n\n" + T("Used in the Non-AI Scale mode, when the picture is resized with the filter chosen in the main window.")).c_str());
+
+    GroupBox(L2("IDC_STATIC_NCNN_ADVANCED", "Performance"), 7, 352, 295, 52);
 
     // rows 1 / 2: memory, like Photoshop's Memory Usage: what there is, what is free, the share RePicturer may use
     // (a share of the FREE memory when a conversion starts, not of the total)
@@ -3027,24 +3372,24 @@ void DialogEvent::DrawAppSetting(float s)
         else if (!gd) info = T("VRAM: no GPU found");
         else if (gd->totalMB > 0) info = Format(T("VRAM: %d MB total, %d MB free").c_str(), gd->totalMB, gd->heapMB);
         else info = Format(T("VRAM: %d MB free").c_str(), gd->heapMB);
-        RowLabel(info, 14, 174, 166);
-        RightLabel(T("Let RePicturer use"), 168, 174, 252);
-        PercentField("##vram", app.vramText, 255, 174);
-        if (ImGui::IsItemHovered() || HoverRect(14, 174, 281, 14))
-            TooltipText("%s", L2("TipVramLimit", "The most GPU memory (VRAM) RePicturer may use, as a share of the memory that is free\n"
+        RowLabel(info, 14, 366, 166);
+        RightLabel(T("Let RePicturer use"), 168, 366, 252);
+        PercentField("##vram", app.vramText, 255, 366);
+        if (ImGui::IsItemHovered() || HoverRect(14, 366, 281, 14))
+            TooltipText("%s", L2("TipVramLimit", "Acceptable value: From 20% to 80%.\nThe most GPU memory (VRAM) RePicturer may use, as a share of the memory that is free\n"
                 "when a conversion starts - not of the whole card. Example: 16 GB card, 12 GB free, 60 % = 7.2 GB.\n"
                 "20 - 60 % is a safe range: it leaves room for Windows, the browser and games, and avoids\n"
                 "out-of-memory errors and crashes. Go above 60 % only when nothing else uses the GPU.\n"
-                "An image that runs out is retried up to 3 times with a smaller Split size. Default 60 %.").c_str());
+                "An image that fails is retried up to 2 times: first in 2 tiles, then as 1 tile. Default 60 %.").c_str());
     }
     {
         uint64_t totalMB = 0, freeMB = 0;
         SystemRam(totalMB, freeMB);
-        RowLabel(Format(T("RAM: %d MB total, %d MB free").c_str(), (int)totalMB, (int)freeMB), 14, 193, 166);
-        RightLabel(T("Let RePicturer use"), 168, 193, 252);
-        PercentField("##ram", app.ramText, 255, 193);
-        if (ImGui::IsItemHovered() || HoverRect(14, 193, 281, 14))
-            TooltipText("%s", L2("TipRamLimit", "The most RAM the pictures in progress may use, as a share of the RAM that is free\n"
+        RowLabel(Format(T("RAM: %d MB total, %d MB free").c_str(), (int)totalMB, (int)freeMB), 14, 385, 166);
+        RightLabel(T("Let RePicturer use"), 168, 385, 252);
+        PercentField("##ram", app.ramText, 255, 385);
+        if (ImGui::IsItemHovered() || HoverRect(14, 385, 281, 14))
+            TooltipText("%s", L2("TipRamLimit", "Acceptable value: From 20% to 80%.\nThe most RAM the pictures in progress may use, as a share of the RAM that is free\n"
                 "when a conversion starts - not of all RAM. Example: 32 GB RAM, 20 GB free, 60 % = 12 GB.\n"
                 "20 - 60 % is a safe range: Windows and your other programs keep enough memory, and the PC\n"
                 "does not slow down or freeze. Go above 60 % only when nothing else is running.\n"
@@ -3058,8 +3403,8 @@ void DialogEvent::DrawAppSetting(float s)
         ShowPercentWarning();
     }
 
-    bool ok = Button(L2("OK", "OK"), "appok", 198, 222, 50, 14);
-    bool cancel = Button(L2("Cancel", "Cancel"), "appcancel", 252, 222, 50, 14);
+    bool ok = Button(L2("OK", "OK"), "appok", 198, 414, 50, 14);
+    bool cancel = Button(L2("Cancel", "Cancel"), "appcancel", 252, 414, 50, 14);
     ImGui::EndChild();
 
     if (ok && (!PercentValid(app.vramText) || !PercentValid(app.ramText)))
@@ -3077,6 +3422,14 @@ void DialogEvent::DrawAppSetting(float s)
         tOutputDirFix = app.outputDirFix;
         useCustomDirs = app.customDirs;
         syncgap = app.syncgap;
+        postFilter = app.postFilter;
+        postAR = app.postAR;
+        postLinear = app.postLinear;
+        nonAiLinear = app.nonAiLinear;
+        preDeband = app.preDeband;
+        postDither = app.postDither;
+        nonAiDeband = app.nonAiDeband;
+        nonAiDither = app.nonAiDither;
         vramPercent = app.vramPercent;
         ramPercent = app.ramPercent;
         if (useCustomDirs && !tOutputDirFix.empty() && PathExists(tOutputDirFix))
@@ -3112,7 +3465,7 @@ void DialogEvent::DrawMessageBoxes(float s)
 void DialogEvent::FixModeForModel()
 {
     const ModelEntry* cm = CurrentModel();
-    if (!cm) return;
+    if (!cm || radioMode == 3) return; // Non-AI Scale uses no model
     if (!cm->CanMagnify() && radioMode != 2) radioMode = 2;   // denoise only
     if (!cm->AnyDenoise() && radioMode != 1) radioMode = 1;   // magnify only
     // built-in cleanup (cannot be turned off): only "Scale only"
@@ -3133,8 +3486,8 @@ namespace
     struct UseCase { const char* content; const char* best; const char* also; const char* avoid; };
     const UseCase g_useCases[] = {
         {"Anime / manga / 2D illustration / digital painting",
-         "Real-CUGAN SE",
-         "waifu2x CUnet (most faithful, softer), Real-ESRGAN x4plus anime (strongest cleanup)",
+         "Real-CUGAN SE (sharper), waifu2x CUnet (most faithful)",
+         "Real-ESRGAN x4plus anime (strongest cleanup)",
          "the photo models (they add photo texture)"},
         {"Line art, manga / comic scans, sketches",
          "Real-CUGAN Pro",
@@ -3169,8 +3522,8 @@ namespace
          "NMKD Superscale, Real-ESRGAN x4plus",
          "NMKD Siax (sharpens the noise)"},
         {"Stylized / toon / cel-shaded 3D, game art, Pixar-like",
-         "Real-CUGAN SE",
-         "waifu2x CUnet, Real-ESRGAN x4plus anime",
+         "Real-CUGAN SE (sharper), waifu2x CUnet (most faithful)",
+         "Real-ESRGAN x4plus anime",
          "the photo models (they add photo texture)"},
         {"Screenshots with text, UI, charts, diagrams",
          "waifu2x CUnet",
@@ -3191,7 +3544,8 @@ namespace
         {"Real-CUGAN SE", "Real-CUGAN (Bilibili, 2022)", "2x, 3x, 4x",
          "Level 0 = conservative (2x/3x/4x), Level 1 and 2 (2x only), Level 3 (2x/3x/4x); Scale only = no denoise",
          "medium (about like waifu2x CUnet)",
-         "Best general model for 2D art: sharper and cleaner than waifu2x CUnet while keeping the drawing style. "
+         "Sharpest model for 2D art: crisper and cleaner than waifu2x CUnet while keeping the drawing style. It redraws edges, "
+         "so run it once: passing a picture through it again and again adds lines and coloured outlines. "
          "The 'Real-CUGAN sync gap' option (Preferences) keeps the colour statistics of big images consistent between tiles."},
         {"Real-CUGAN Pro", "Real-CUGAN (Bilibili, 2022)", "2x, 3x",
          "Level 0 = conservative, Level 3 = denoise; Scale only = no denoise (no Level 1/2)",
@@ -3252,7 +3606,7 @@ namespace
         {"waifu2x CUnet", "waifu2x (nagadomi, 2018)", "2x (and 1x denoise)",
          "Level 0-3 (higher = stronger)",
          "slow",
-         "Most faithful to the original 2D artwork, softer than Real-CUGAN. Has a true denoise-only network."},
+         "Most faithful to the original 2D artwork, softer than Real-CUGAN. Has a true denoise-only network and is safe for repeated denoising."},
         {"waifu2x UpResNet10", "waifu2x (nagadomi, 2018)", "2x",
          "Level 0-3 (denoise only = 2x then shrink, like waifu2x-caffe)",
          "medium",
@@ -3288,6 +3642,61 @@ namespace
     };
 }
 
+// one table row with every cell centred: each wrapped line horizontally in its column, and the whole text vertically in
+// the row (the tallest cell sets the row height). colors[c] == nullptr: the normal text colour
+static void CenteredTableRow(const std::vector<std::string>& cells, const std::vector<const ImVec4*>& colors)
+{
+    ImFont* font = ImGui::GetFont();
+    const float size = ImGui::GetFontSize(), lh = ImGui::GetTextLineHeight();
+    const int n = (int)cells.size();
+    std::vector<std::vector<std::pair<const char*, const char*>>> lines(n);
+    float tallest = 0;
+    for (int c = 0; c < n; c++)
+    {
+        ImGui::TableSetColumnIndex(c);
+        const float w = std::max(1.0f, ImGui::GetContentRegionAvail().x);
+        const char* p = cells[c].c_str();
+        const char* end = p + cells[c].size();
+        while (p < end)
+        {
+            const char* nl = (const char*)memchr(p, '\n', end - p);
+            const char* le = nl ? nl : end;
+            if (p == le) lines[c].push_back({p, p});
+            while (p < le)
+            {
+                const char* br = font->CalcWordWrapPosition(size, p, le, w);
+                if (br <= p) br = p + 1;
+                const char* te = br;
+                while (te > p && te[-1] == ' ') te--;
+                lines[c].push_back({p, te});
+                p = br;
+                while (p < le && *p == ' ') p++;
+            }
+            p = nl ? nl + 1 : end;
+        }
+        tallest = std::max(tallest, lines[c].size() * lh);
+    }
+    for (int c = 0; c < n; c++)
+    {
+        ImGui::TableSetColumnIndex(c);
+        const float w = ImGui::GetContentRegionAvail().x;
+        const ImVec2 p0 = ImGui::GetCursorPos();
+        float y = p0.y + (tallest - lines[c].size() * lh) * 0.5f;
+        if (c < (int)colors.size() && colors[c]) ImGui::PushStyleColor(ImGuiCol_Text, *colors[c]);
+        for (const auto& l : lines[c])
+        {
+            const float tw = font->CalcTextSizeA(size, FLT_MAX, 0.0f, l.first, l.second).x;
+            ImGui::SetCursorPos(ImVec2(p0.x + std::max(0.0f, (w - tw) * 0.5f), y));
+            ImGui::TextUnformatted(l.first, l.second);
+            y += lh;
+        }
+        if (c < (int)colors.size() && colors[c]) ImGui::PopStyleColor();
+        // the cell takes the full row height
+        ImGui::SetCursorPos(ImVec2(p0.x, p0.y + tallest));
+        ImGui::Dummy(ImVec2(0, 0));
+    }
+}
+
 void DialogEvent::DrawModelHelp(float s, bool& close)
 {
     // drawn into its own os window (see AppMain), filling it
@@ -3306,14 +3715,12 @@ void DialogEvent::DrawModelHelp(float s, bool& close)
         ImGui::TableSetupColumn(T("Best").c_str(), ImGuiTableColumnFlags_WidthStretch, 1.0f);
         ImGui::TableSetupColumn(T("Also good").c_str(), ImGuiTableColumnFlags_WidthStretch, 1.5f);
         ImGui::TableSetupColumn(T("Avoid").c_str(), ImGuiTableColumnFlags_WidthStretch, 1.1f);
-        ImGui::TableHeadersRow();
+        ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
+        CenteredTableRow({T("Picture"), T("Best"), T("Also good"), T("Avoid")}, {});
         for (const auto& u : g_useCases)
         {
             ImGui::TableNextRow();
-            ImGui::TableNextColumn(); ImGui::TextWrapped("%s", T(u.content).c_str());
-            ImGui::TableNextColumn(); ImGui::TextWrapped("%s", T(u.best).c_str());
-            ImGui::TableNextColumn(); ImGui::TextWrapped("%s", T(u.also).c_str());
-            ImGui::TableNextColumn(); ImGui::TextWrapped("%s", T(u.avoid).c_str());
+            CenteredTableRow({T(u.content), T(u.best), T(u.also), T(u.avoid)}, {});
         }
         ImGui::EndTable();
     }
@@ -3616,12 +4023,13 @@ void DialogEvent::DrawSpeedHelp(float s, bool& close)
            "The pieces overlap and are stitched back together, so the size does not change the result.");
     bullet("0 = automatic (recommended): chosen for each model from the free GPU memory "
            "(about 400 with 8 GB or more, 200 with 4 GB, 100 with 2 GB).");
+    bullet("1 = no split: the whole picture is processed in one piece. Good for small pictures; a big one needs a lot of GPU memory (if it runs out, the picture is retried with smaller pieces).");
     bullet("Bigger = a little faster (fewer pieces) but needs more GPU memory. Too big and the conversion fails, "
            "gives a black / broken image or the graphics driver resets.");
-    bullet("Smaller = less GPU memory, slower. The minimum is 32.");
+    bullet("Smaller = less GPU memory, slower. Very small pieces (below about 32) are much slower.");
     bullet("If a conversion fails with 0: try 200, then 100, then 64.");
     bullet("The list shows sizes that divide the picture evenly (like waifu2x-caffe) and the presets from crop_size_list.txt; "
-           "any number of 32 or more can be typed.");
+           "any whole number can be typed (0 = automatic, 1 = no split).");
     bullet("The heavy 4x models (Real-ESRGAN x4plus, RealESRNet x4plus, Nomos8kSC, NMKD Siax / Superscale) need about half the split size of the others for the same memory.");
     bullet("Real-CUGAN: with 'sync gap' 0 (Preferences) neighbouring pieces can differ slightly in tone on big images; the default 3 avoids it.");
     bullet("CPU fallback: 400 by default, limited by the system memory instead of the GPU memory.");
@@ -3646,6 +4054,137 @@ void DialogEvent::DrawSpeedHelp(float s, bool& close)
     const float bw = 90 * s;
     ImGui::SetCursorPosX(ImGui::GetWindowContentRegionMax().x - bw);
     if (ImGui::Button((L2("OK", "OK") + "##speedok").c_str(), ImVec2(bw, 0)) || ImGui::IsKeyPressed(ImGuiKey_Escape))
+        close = true;
+    ImGui::End();
+}
+
+// ============================================================================ Non-AI filter guide ("?" next to Filter / Anti-Ringing)
+
+void DialogEvent::DrawFilterHelp(float s, bool& close)
+{
+    // drawn into its own os window (see AppMain), filling it
+    ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(vp->Pos);
+    ImGui::SetNextWindowSize(vp->Size);
+    ImGui::Begin("##filterhelpwin", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus);
+
+    const float bh = ImGui::GetFrameHeightWithSpacing() + ImGui::GetStyle().ItemSpacing.y;
+    ImGui::BeginChild("##filterbody", ImVec2(0, -bh), ImGuiChildFlags_Borders, ImGuiWindowFlags_AlwaysVerticalScrollbar);
+
+    auto bullet = [this](const std::string& t) {
+        ImGui::Bullet();
+        ImGui::SameLine();
+        ImGui::TextWrapped("%s", t.c_str());
+    };
+
+    ImGui::TextWrapped("%s", T("Non-AI Scale resizes with a classic filter, like madVR or an image editor: no model, nothing is invented, "
+                               "and the result is the same on every computer.").c_str());
+    ImGui::Spacing();
+    // comparison table like madVR's: how each filter (and taps) behaves when enlarging
+    ImGui::SeparatorText(T("Filter comparison (enlarging)").c_str());
+    {
+        // 0 none, 1 very low, 2 low, 3 medium, 4 high, 5 very high; speed 0 very fast .. 4 very slow
+        struct Row { const char* name; int sharp, ring, alias, blur, speed; const char* best; };
+        static const Row rows[] = {
+            {"Nearest Neighbor", 5, 0, 5, 0, 0, "Pixel art at 2x, 3x or 4x"},
+            {"Bilinear", 2, 0, 3, 4, 0, "Quick previews"},
+            {"Bicubic Mitchell", 2, 1, 2, 3, 1, "Any picture: safe and soft, no halos"},
+            {"Bicubic Catmull-Rom", 3, 2, 3, 2, 1, "A sharper bicubic, slight halos"},
+            {"Lanczos 2-tap", 3, 2, 3, 2, 1, "Sharper than bicubic, few halos"},
+            {"Lanczos 3-tap", 4, 3, 2, 1, 2, "Photos and drawings (with Anti-Ringing)"},
+            {"Lanczos 4-tap", 4, 4, 2, 1, 2, "The most detail (with Anti-Ringing)"},
+            {"Lanczos 8-tap", 5, 5, 1, 1, 3, "Rarely needed: strong halos"},
+            {"Spline36", 4, 2, 2, 1, 2, "Photos and drawings: clean edges"},
+            {"Jinc 3-tap", 4, 3, 1, 1, 3, "Enlarging: smooth diagonal edges"},
+            {"Jinc 4-tap", 5, 4, 1, 1, 3, "Enlarging, sharper"},
+            {"Jinc 8-tap", 5, 5, 1, 1, 4, "Rarely needed: very slow"},
+        };
+        const std::string level[6] = {T("None"), T("Very low"), T("Low"), T("Medium"), T("High"), T("Very high")};
+        const std::string speed[5] = {T("Very fast"), T("Fast"), T("Medium"), T("Slow"), T("Very slow")};
+        // colour of a rating: green = good, red = bad (sharpness is good when high, the artifacts when low)
+        auto good = [](int v) { return ImVec4(0.45f + 0.1f * v, 0.85f - 0.09f * v, 0.45f, 1.0f); };
+        const ImGuiTableFlags tf = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp;
+        if (ImGui::BeginTable("##filtertable", 7, tf))
+        {
+            ImGui::TableSetupColumn(T("Filter").c_str(), 0, 1.25f);
+            ImGui::TableSetupColumn(T("Sharpness").c_str(), 0, 0.8f);
+            ImGui::TableSetupColumn(T("Ringing (halos)").c_str(), 0, 0.8f);
+            ImGui::TableSetupColumn(T("Aliasing (jaggies)").c_str(), 0, 0.8f);
+            ImGui::TableSetupColumn(T("Blur").c_str(), 0, 0.8f);
+            ImGui::TableSetupColumn(T("Speed").c_str(), 0, 0.8f);
+            ImGui::TableSetupColumn(T("Best for").c_str(), 0, 1.9f);
+            ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
+            {
+                std::vector<std::string> head;
+                for (int c = 0; c < 7; c++) head.push_back(ImGui::TableGetColumnName(c));
+                CenteredTableRow(head, {});
+            }
+            for (const Row& r : rows)
+            {
+                ImGui::TableNextRow();
+                const ImVec4 cs = good(5 - r.sharp), cr = good(r.ring), ca = good(r.alias), cb = good(r.blur), cp = good(r.speed + (r.speed > 2 ? 1 : 0));
+                CenteredTableRow({T(r.name), level[r.sharp], level[r.ring], level[r.alias], level[r.blur], speed[r.speed], T(r.best)},
+                                 {nullptr, &cs, &cr, &ca, &cb, &cp, nullptr});
+            }
+            ImGui::EndTable();
+        }
+    }
+    bullet(T("Ringing: thin bright or dark outlines along hard edges. Aliasing: jagged, stair-stepped diagonal edges. "
+             "Blur: soft, less detailed edges. Every filter trades these against each other."));
+    bullet(T("Taps (Lanczos 2 / 3 / 4 / 8, Jinc 3 / 4 / 8): how far the filter looks around each pixel. More taps = sharper, "
+             "with more halos, and slower. 3-tap is the usual choice. The other filters have a fixed size: Taps is greyed out."));
+    bullet(T("Shrinking: every filter is widened so that no detail is skipped, which removes aliasing. Bicubic Mitchell, Catmull-Rom "
+             "and Lanczos 3-tap with linear light give the best results; Nearest Neighbor drops pixels and can form patterns (moiré)."));
+
+    ImGui::Spacing();
+    ImGui::SeparatorText(T("Anti-Ringing").c_str());
+    bullet(T("Sharp filters (Catmull-Rom, Lanczos, Spline36, Jinc) draw thin bright or dark outlines (halos, ringing) along hard edges. "
+             "Anti-Ringing keeps every new pixel within the brightness of the source pixels nearest to it."));
+    bullet(T("Off: no change. Relaxed: removes most halos and keeps the picture sharp. Strict (Soft): removes all halos, "
+             "but the picture becomes a little softer."));
+    bullet(T("Nearest Neighbor, Bilinear and Bicubic Mitchell create (almost) no halos: Anti-Ringing shows Off and is greyed out. "
+             "Your choice is kept and comes back with a sharper filter."));
+
+    ImGui::Spacing();
+    ImGui::SeparatorText(T("Scale in linear light (Downscaling Only)").c_str());
+    bullet(T("Preferences > Non-AI Filters Settings. Pictures are stored with gamma: averaging the stored values makes thin bright "
+             "lines and dots darker when a picture is shrunk. In linear light the brightness stays right."));
+    bullet(T("Used only when the picture gets smaller (no side gets bigger and at least one gets smaller). When enlarging it would "
+             "make the halos stronger, so it is skipped."));
+
+    ImGui::Spacing();
+    ImGui::SeparatorText(T("Color Debanding").c_str());
+    bullet(T("Smooths away colour banding that is already in the picture: visible steps in skies, shadows and soft gradients, "
+             "common in game art, old renders and compressed JPGs. Only flat areas are changed; edges, lines and texture are kept."));
+    bullet(T("It runs first, before the filter (Preferences > Non-AI Filters Settings) or before AI Conversion "
+             "(Preferences > Models Settings > Pre-AI Conversion Settings), so the steps are not sharpened. "
+             "Low: narrow bands, Medium: wider ones, High: also very wide bands, like a big sky."));
+
+    ImGui::Spacing();
+    ImGui::SeparatorText(T("Dithering").c_str());
+    bullet(T("The filters work in high precision; at the end every pixel is rounded to 8-bit colour (256 levels per channel). "
+             "On a smooth gradient plain rounding can create new steps. Dithering mixes the two nearest levels in a very fine "
+             "pattern, so the gradient stays smooth."));
+    bullet(T("Ordered: a fine, regular pattern. Error Diffusion: spreads each rounding error to the next pixels, the smoothest "
+             "and most natural result. It only acts when the picture is resized, and is not needed for pixel art."));
+
+    ImGui::Spacing();
+    ImGui::SeparatorText(T("Post-AI Conversion Settings").c_str());
+    bullet(T("Preferences > Models Settings. The AI modes end with a resize of the AI result to the exact output size "
+             "(for example 2.25x, or a Width x Height): the same filters, anti-ringing and linear light, chosen there. "
+             "Default: Bicubic Mitchell."));
+
+    ImGui::Spacing();
+    ImGui::SeparatorText(T("Processing Unit and Thread(s)").c_str());
+    bullet(T("GPU: the filter runs on the graphics card. If it fails there, that picture is resized on the CPU instead, "
+             "with the same result."));
+    bullet(T("CPU: Thread(s) = how many CPU cores are used. GPU: how many pictures are resized at the same time."));
+    bullet(T("Split size is not needed: big pictures are split automatically."));
+    ImGui::EndChild();
+
+    const float bw = 90 * s;
+    ImGui::SetCursorPosX(ImGui::GetWindowContentRegionMax().x - bw);
+    if (ImGui::Button((L2("OK", "OK") + "##filterok").c_str(), ImVec2(bw, 0)) || ImGui::IsKeyPressed(ImGuiKey_Escape))
         close = true;
     ImGui::End();
 }
@@ -3727,6 +4266,18 @@ void DialogEvent::ResetToDefault()
     syncgap = 3;
     vramPercent = 60;
     ramPercent = 60;
+    nonAiFilter = DefaultNonAiFilter;
+    lanczosTaps = 3;
+    jincTaps = 3;
+    nonAiAR = 0;
+    nonAiLinear = false;
+    postFilter = 0;
+    postAR = 0;
+    postLinear = false;
+    preDeband = 0;
+    postDither = 0;
+    nonAiDeband = 0;
+    nonAiDither = 0;
 
     // the ui language is kept (not part of the reset); the folders the explorer remembered are forgotten
     lastBrowseIn.clear();

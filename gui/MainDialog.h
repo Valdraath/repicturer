@@ -9,7 +9,7 @@
 // the name the os shows (window title, taskbar, task manager, x11 WM_CLASS)
 #define APP_NAME "RePicturer"
 #define APP_NAME_W L"RePicturer"
-#define APP_VERSION_NUM "2.3"
+#define APP_VERSION_NUM "3.0"
 #define APP_VERSION "v" APP_VERSION_NUM
 #define APP_TITLE APP_NAME " " APP_VERSION   // title bar text
 
@@ -98,21 +98,23 @@ public:
         return "ja";
     }
 
-    // "?" guides live in their own os windows (AppMain): 1 = model guide, 2 = split size / thread(s)
+    // "?" guides live in their own os windows (AppMain): 1 = model guide, 2 = split size / thread(s), 3 = Non-AI filters
     int TakeHelpRequest()
     {
-        int k = modelHelpRequest ? 1 : speedHelpRequest ? 2 : 0;
+        int k = modelHelpRequest ? 1 : speedHelpRequest ? 2 : filterHelpRequest ? 3 : 0;
         if (k == 1) modelHelpRequest = false;
         if (k == 2) speedHelpRequest = false;
+        if (k == 3) filterHelpRequest = false;
         return k;
     }
     std::string HelpTitle(int kind) const
     {
-        return (kind == 1 ? L2("ModelHelpTitle", "Model guide") : L2("SpeedHelpTitle", "Split size and Thread(s)")) + " - " + APP_TITLE;
+        return (kind == 1 ? L2("ModelHelpTitle", "Model guide") : kind == 3 ? T("Non-AI filter guide") : L2("SpeedHelpTitle", "Split size and Thread(s)")) + " - " + APP_TITLE;
     }
     void DrawHelpWindow(int kind, float s, bool& close)
     {
         if (kind == 1) DrawModelHelp(s, close);
+        else if (kind == 3) DrawFilterHelp(s, close);
         else DrawSpeedHelp(s, close);
     }
 
@@ -139,6 +141,7 @@ private:
         eModeNoise,
         eModeScale,
         eModeNoiseScale,
+        eModeNonAI,      // Non-AI Scale: a classic filter, no model
     };
 
     // ------------------------------------------------ caffe DialogEvent members
@@ -188,6 +191,22 @@ private:
     int vramPercent;       // gpu memory limit: % of the memory that is free when a conversion starts (10-80)
     int ramPercent;        // RAM limit: % of the RAM that is free when a conversion starts (10-80)
 
+    // Non-AI Scale (main window) and its Preferences box
+    int nonAiFilter = 2;    // index into g_nonAiFilters (Bicubic Mitchell)
+    int lanczosTaps = 3;    // 2 / 3 / 4 / 8
+    int jincTaps = 3;       // 3 / 4 / 8
+    int nonAiAR = 0;        // 0 off, 1 relaxed, 2 strict: kept while a filter without halos shows Off
+    bool nonAiLinear = false;
+    int nonAiDeband = 0;    // Color Debanding 0 off .. 3 high, before the filter
+    int nonAiDither = 0;    // 0 off, 1 ordered, 2 error diffusion
+    // Pre-AI Conversion Settings (Preferences): Color Debanding before the AI
+    int preDeband = 0;
+    // Post-AI Conversion Settings (Preferences): the resize of the AI result to the exact output size
+    int postFilter = 0;     // index into g_postFilters (Bicubic Mitchell)
+    int postAR = 0;         // kept while Mitchell shows Off
+    bool postLinear = false;
+    int postDither = 0;
+
     // ------------------------------------------------ ui state (the win32 controls)
     char editInput[4096] = {0};
     char editOutput[4096] = {0};
@@ -208,7 +227,7 @@ private:
     char editScaleWH[64] = {0};   // "<width>x<height>" (command line / setting.ini); the GUI uses editScaleWidth / Height
     char comboCrop[64] = {0};
     char comboBatch[64] = {0};
-    int radioMode = 0;   // 0 noise_scale, 1 scale, 2 noise (dialog order)
+    int radioMode = 0;   // 0 noise_scale, 1 scale, 2 noise, 3 Non-AI Scale (dialog order)
     int radioNoise = 0;
     int radioScale = 0;
     int outExtIndex = 0;
@@ -246,6 +265,14 @@ private:
         char inputDirFix[2048] = {0};
         char outputDirFix[2048] = {0};
         int syncgap = 3;
+        int postFilter = 0;
+        int postAR = 0;
+        bool postLinear = false;
+        bool nonAiLinear = false;
+        int preDeband = 0;
+        int postDither = 0;
+        int nonAiDeband = 0;
+        int nonAiDither = 0;
         int vramPercent = 60;
         int ramPercent = 60;
         char vramText[3] = "60"; // the fields: 2 digits, 20-80
@@ -255,6 +282,7 @@ private:
 
     // model guide popup ("?" next to the model list)
     bool modelHelpRequest = false;
+    bool filterHelpRequest = false; // "?" next to Filter / Anti-Ringing (Non-AI Scale)
 
     // the VRAM / RAM share fields of Preferences: invalid input is undone and warned about, like Output quality
     bool percentWarn = false;
@@ -384,6 +412,8 @@ private:
     void ShowQualityWarning();
     void ShowScaleNumWarning();
     void DrawSpeedHelp(float s, bool& close);
+    void DrawFilterHelp(float s, bool& close);
+    std::string CliModeName() const; // -M value: denoise-scale / scale / denoise / non-ai-scale
     void FixModeForModel();
     const ModelEntry* CurrentModel() const { return comboModel >= 0 && comboModel < (int)models.size() ? &models[comboModel] : nullptr; }
 };

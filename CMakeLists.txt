@@ -17,6 +17,7 @@ set(W2X_VERSION "20250915-gui1" CACHE STRING "version string")
 
 option(W2X_BUILD_CLI "build repicturer-cli, the converter (enhanced waifu2x-ncnn-vulkan)" ON)
 option(W2X_BUILD_GUI "build RePicturer, the gui" ON)
+option(W2X_BUILD_TOOLS "build the caffe model converter" OFF)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -93,12 +94,12 @@ if(W2X_BUILD_CLI)
     waifu2x_add_shader(waifu2x_preproc.comp)
     waifu2x_add_shader(waifu2x_postproc.comp)
     foreach(s realcugan_preproc realcugan_postproc realcugan_4x_postproc
-            realesrgan_preproc realesrgan_postproc)
+            realesrgan_preproc realesrgan_postproc resample_pass resample_ewa)
         waifu2x_add_shader(${s}.comp)
     endforeach()
     add_custom_target(generate-spirv DEPENDS ${SHADER_SPV_HEX_FILES})
 
-    add_executable(repicturer-cli cli/main.cpp cli/waifu2x.cpp cli/realcugan.cpp cli/realesrgan.cpp cli/image_io.cpp cli/anim_io.cpp)
+    add_executable(repicturer-cli cli/main.cpp cli/resample.cpp cli/waifu2x.cpp cli/realcugan.cpp cli/realesrgan.cpp cli/image_io.cpp cli/anim_io.cpp)
     set_target_properties(repicturer-cli PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
     add_dependencies(repicturer-cli generate-spirv)
     target_compile_definitions(repicturer-cli PRIVATE W2X_VERSION="${W2X_VERSION}" OPJ_STATIC)
@@ -126,4 +127,10 @@ endif()
 
 if(W2X_BUILD_GUI)
     include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/gui.cmake)
+endif()
+
+# ---------------------------------------------------------------- tools
+
+if(W2X_BUILD_TOOLS)
+    add_executable(caffe2ncnn-waifu2x tools/caffe2ncnn_waifu2x.cpp)
 endif()

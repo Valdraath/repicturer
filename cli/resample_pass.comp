@@ -1,0 +1,61 @@
+// one pass of a separable filter (along x or along y), with optional anti-ringing
+// the cpu prepares the taps of every output column / row (source index + weight) and the main-lobe taps
+// that anti-ringing clamps to; plain 32-bit floats only (rgba, premultiplied, maybe linear light)
+
+#version 450
+
+layout (binding = 0) readonly buffer src_blob { vec4 src_data[]; };
+layout (binding = 1) writeonly buffer dst_blob { vec4 dst_data[]; };
+layout (binding = 2) readonly buffer idx_blob { int idx_data[]; };
+layout (binding = 3) readonly buffer wgt_blob { float wgt_data[]; };
+layout (binding = 4) readonly buffer lobe_blob { int lobe_data[]; };
+
+layout (push_constant) uniform parameter
+{
+    int srcw;      // pixels per row of src
+    int outw;      // pixels per row of dst
+    int outh;      // rows of dst (this stripe)
+    int ntap;      // taps per output coordinate
+    int axis;      // 0: along x (dst row y = src row y), 1: along y
+    int coord0;    // along y: the output row of dst row 0
+    int base;      // along y: the source row of src row 0
+    float strength; // anti-ringing: 0 off, 1 full clamp
+} p;
+
+void main()
+{
+    int gx = int(gl_GlobalInvocationID.x);
+    int gy = int(gl_GlobalInvocationID.y);
+
+    if (gx >= p.outw || gy >= p.outh)
+        return;
+
+    int k = p.axis == 0 ? gx : gy + p.coord0;
+    int t0 = k * p.ntap;
+
+    vec4 sum = vec4(0.0);
+    for (int t = 0; t < p.ntap; t++)
+    {
+        int i = idx_data[t0 + t];
+        vec4 s = p.axis == 0 ? src_data[gy * p.srcw + i] : src_data[(i - p.base) * p.srcw + gx];
+        sum += wgt_data[t0 + t] * s;
+    }
+
+    if (p.strength > 0.0)
+    {
+        int l0 = lobe_data[k * 2];
+        int l1 = lobe_data[k * 2 + 1];
+        vec4 lo = vec4(3.0e38);
+        vec4 hi = vec4(-3.0e38);
+        for (int t = l0; t < l1; t++)
+        {
+            int i = idx_data[t0 + t];
+            vec4 s = p.axis == 0 ? src_data[gy * p.srcw + i] : src_data[(i - p.base) * p.srcw + gx];
+            lo = min(lo, s);
+            hi = max(hi, s);
+        }
+        sum = mix(sum, clamp(sum, lo, hi), p.strength);
+    }
+
+    dst_data[gy * p.outw + gx] = sum;
+}

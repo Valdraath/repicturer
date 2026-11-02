@@ -223,6 +223,12 @@ int RealCUGAN::load(const std::string& parampath, const std::string& modelpath)
 int RealCUGAN::process(const ncnn::Mat& inimage, ncnn::Mat& outimage) const
 {
     bool syncgap_needed = tilesize < std::max(inimage.w, inimage.h);
+    // sync gap modes that cannot measure this picture crashed (missing statistics): use the rough mode instead
+    //   3 (very rough) samples fixed 32 px tiles, every third one: a picture under 96 px has none
+    //   1 (accurate) measures every real tile: tiles under 4 px are too small for the network
+    int syncgap = this->syncgap;
+    if (syncgap == 3 && (inimage.w < 96 || inimage.h < 96)) syncgap = 2;
+    if (syncgap == 1 && tilesize < 4) syncgap = 2;
 
     if (!vkdev)
     {

@@ -1,0 +1,80 @@
+// Jinc (EWA): every output pixel is a round weighted average of the source pixels around it, with optional
+// anti-ringing (clamped to the 2x2 source pixels nearest to it). The weights come from a table the cpu made
+// (kernel value by squared distance), so the cpu and the gpu use the same numbers
+
+#version 450
+
+layout (binding = 0) readonly buffer src_blob { vec4 src_data[]; };
+layout (binding = 1) writeonly buffer dst_blob { vec4 dst_data[]; };
+layout (binding = 2) readonly buffer lut_blob { float lut_data[]; };
+
+layout (push_constant) uniform parameter
+{
+    int srcw;      // source width (pixels per row of src)
+    int srch;      // source height (whole picture)
+    int outw;
+    int outh;      // rows of dst (this stripe)
+    int oy0;       // the output row of dst row 0
+    int base;      // the source row of src row 0
+    int rows;      // source rows held in src
+    int lutn;      // table entries - 1
+    float isx;     // source / output size
+    float isy;
+    float fsx;     // support scale (1, or more when downscaling)
+    float fsy;
+    float radius;  // kernel radius
+    float lutscale; // lutn / radius^2
+    float strength;
+} p;
+
+void main()
+{
+    int gx = int(gl_GlobalInvocationID.x);
+    int gy = int(gl_GlobalInvocationID.y);
+
+    if (gx >= p.outw || gy >= p.outh)
+        return;
+
+    float cx = (float(gx) + 0.5) * p.isx - 0.5;
+    float cy = (float(gy + p.oy0) + 0.5) * p.isy - 0.5;
+
+    int x0 = int(ceil(cx - p.radius * p.fsx));
+    int x1 = int(floor(cx + p.radius * p.fsx));
+    int y0 = int(ceil(cy - p.radius * p.fsy));
+    int y1 = int(floor(cy + p.radius * p.fsy));
+    float r2 = p.radius * p.radius;
+
+    vec4 sum = vec4(0.0);
+    float wsum = 0.0;
+    vec4 lo = vec4(3.0e38);
+    vec4 hi = vec4(-3.0e38);
+    for (int iy = y0; iy <= y1; iy++)
+    {
+        float dy = (float(iy) - cy) / p.fsy;
+        // never outside the rows of this stripe, whatever the float maths does
+        int row = clamp(clamp(iy, 0, p.srch - 1) - p.base, 0, p.rows - 1) * p.srcw;
+        for (int ix = x0; ix <= x1; ix++)
+        {
+            float dx = (float(ix) - cx) / p.fsx;
+            float d2 = dx * dx + dy * dy;
+            if (d2 >= r2)
+                continue;
+            float f = d2 * p.lutscale;
+            int li = min(int(f), p.lutn - 1);
+            float w = mix(lut_data[li], lut_data[li + 1], f - float(li));
+            vec4 s = src_data[row + clamp(ix, 0, p.srcw - 1)];
+            sum += w * s;
+            wsum += w;
+            if (abs(dx) < 1.0 && abs(dy) < 1.0)
+            {
+                lo = min(lo, s);
+                hi = max(hi, s);
+            }
+        }
+    }
+    sum /= wsum;
+    if (p.strength > 0.0 && lo.x <= hi.x)
+        sum = mix(sum, clamp(sum, lo, hi), p.strength);
+
+    dst_data[gy * p.outw + gx] = sum;
+}
