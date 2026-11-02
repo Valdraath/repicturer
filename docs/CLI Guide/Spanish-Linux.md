@@ -171,7 +171,7 @@ solo reducir ruido y lo demás es reducir ruido y ampliar.
 |---|---|
 | `-m`, `--model path` | carpeta del modelo (por defecto `models-cunet`). El motor depende de la carpeta: `models-cunet`, `models-upconv_7_*`, `models-upresnet10` son waifu2x; `models-realcugan-se / -pro / -nose` son Real-CUGAN; `models-realesrgan-*`, `models-realesr-*`, `models-realesrnet-x4plus`, `models-nomos8ksc`, `models-lsdir-compact`, `models-nmkd-siax / -superscale` son Real-ESRGAN |
 | `-n`, `--noise-level n` | nivel de ruido `-1` (ninguno), `0`-`3` (por defecto 0). Real-CUGAN: 0 = conservador. Real-ESRGAN General: fuerza de la reducción de ruido; LSDIR Compact: nivel de limpieza; NMKD Siax: el nivel de detalle 0-3; los demás modelos Real-ESRGAN limpian por sí solos |
-| `-t`, `--split-size t` | `0` = automático (por defecto), `1` = sin dividir (toda la imagen como 1 bloque), `2` o más = bloques de ese tamaño; un valor por GPU con varias GPU (`0,0`) |
+| `-t`, `--split-size t` | `0` = automático (por defecto), `1` = sin dividir (toda la imagen como 1 bloque), `2`-`512` = bloques de ese tamaño; un valor por GPU con varias GPU (`0,0`) |
 | `-c`, `--sync-gap n` | Sync gap de Real-CUGAN `0`-`3` (por defecto 3, 0 = desactivado) |
 
 Antes de la IA, `--deband` puede suavizar las bandas de la imagen original (Preferencias > Ajustes antes de la conversión con IA,
@@ -206,7 +206,7 @@ lineal. Un 2x / 3x / 4x exacto del modelo se guarda tal cual.
 | Opción | Significado |
 |---|---|
 | `-g`, `--gpu id` | la GPU a usar: `0`, `1`... o `-1` para la CPU (por defecto: la primera GPU). Varias GPU: `0,1` |
-| `-j`, `--threads l:p:s` | hilos de carga : proceso : guardado (por defecto `1:2:2`). Proceso = imágenes a la vez en cada GPU (1-32), o los núcleos de la CPU con `-g -1`. Dos GPU: `1:2,2:2` |
+| `-j`, `--threads l:p:s` | hilos de carga : proceso : guardado (por defecto `1:2:2`). Proceso = imágenes a la vez en cada GPU (1-20), o los núcleos de la CPU con `-g -1`. Dos GPU: `1:2,2:2` |
 | `--vram-percent p` | usa como máximo el p % (20-80, por defecto 60) de la memoria de GPU libre al empezar la conversión |
 | `--ram-percent p` | usa como máximo el p % (20-80, por defecto 60) de la RAM libre al empezar la conversión |
 

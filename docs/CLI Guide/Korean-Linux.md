@@ -171,7 +171,7 @@ CPU로 실행되어 훨씬 느립니다.
 |---|---|
 | `-m`, `--model path` | 모델 폴더 (기본값 `models-cunet`). 엔진은 폴더로 정해집니다: `models-cunet`, `models-upconv_7_*`, `models-upresnet10`은 waifu2x, `models-realcugan-se / -pro / -nose`는 Real-CUGAN, `models-realesrgan-*`, `models-realesr-*`, `models-realesrnet-x4plus`, `models-nomos8ksc`, `models-lsdir-compact`, `models-nmkd-siax / -superscale`는 Real-ESRGAN |
 | `-n`, `--noise-level n` | 노이즈 제거 레벨 `-1`(없음), `0`-`3` (기본값 0). Real-CUGAN: 0 = 보수적. Real-ESRGAN General: 노이즈 제거 강도. LSDIR Compact: 정리 강도. NMKD Siax: 디테일 레벨 0-3. 다른 Real-ESRGAN 모델은 스스로 정리합니다 |
-| `-t`, `--split-size t` | `0` = 자동(기본값), `1` = 분할 안 함(이미지 전체를 타일 1개로), `2` 이상 = 그 크기의 타일. GPU가 여러 개면 GPU마다 값 하나 (`0,0`) |
+| `-t`, `--split-size t` | `0` = 자동(기본값), `1` = 분할 안 함(이미지 전체를 타일 1개로), `2`-`512` = 그 크기의 타일. GPU가 여러 개면 GPU마다 값 하나 (`0,0`) |
 | `-c`, `--sync-gap n` | Real-CUGAN의 Sync gap `0`-`3` (기본값 3, 0 = 끄기) |
 
 AI 전에는 `--deband`로 원본의 색 띠를 매끄럽게 할 수 있습니다(창의 '환경설정 > AI 변환 전 설정'). AI 후에는 이미지가
@@ -205,7 +205,7 @@ AI 전에는 `--deband`로 원본의 색 띠를 매끄럽게 할 수 있습니�
 | 옵션 | 의미 |
 |---|---|
 | `-g`, `--gpu id` | 사용할 GPU: `0`, `1`… 또는 CPU는 `-1` (기본값: 첫 번째 GPU). GPU 여러 개: `0,1` |
-| `-j`, `--threads l:p:s` | 읽기 : 처리 : 저장 스레드 수 (기본값 `1:2:2`). 처리 = GPU마다 동시에 처리할 이미지 수(1-32), `-g -1`이면 CPU 코어 수. GPU 2개: `1:2,2:2` |
+| `-j`, `--threads l:p:s` | 읽기 : 처리 : 저장 스레드 수 (기본값 `1:2:2`). 처리 = GPU마다 동시에 처리할 이미지 수(1-20), `-g -1`이면 CPU 코어 수. GPU 2개: `1:2,2:2` |
 | `--vram-percent p` | 변환 시작 시 남은 GPU 메모리의 최대 p %를 사용 (20-80, 기본값 60) |
 | `--ram-percent p` | 변환 시작 시 남은 RAM의 최대 p %를 사용 (20-80, 기본값 60) |
 

@@ -171,7 +171,7 @@ reduzir ruído, e o resto é reduzir ruído e ampliar.
 |---|---|
 | `-m`, `--model path` | pasta do modelo (padrão `models-cunet`). O motor segue a pasta: `models-cunet`, `models-upconv_7_*`, `models-upresnet10` são waifu2x; `models-realcugan-se / -pro / -nose` são Real-CUGAN; `models-realesrgan-*`, `models-realesr-*`, `models-realesrnet-x4plus`, `models-nomos8ksc`, `models-lsdir-compact`, `models-nmkd-siax / -superscale` são Real-ESRGAN |
 | `-n`, `--noise-level n` | nível de ruído `-1` (nenhum), `0`-`3` (padrão 0). Real-CUGAN: 0 = conservador. Real-ESRGAN General: força da redução de ruído; LSDIR Compact: nível de limpeza; NMKD Siax: o nível de detalhe 0-3; os outros modelos Real-ESRGAN limpam sozinhos |
-| `-t`, `--split-size t` | `0` = automático (padrão), `1` = sem divisão (a imagem inteira como 1 bloco), `2` ou mais = blocos desse tamanho; um valor por GPU com várias GPUs (`0,0`) |
+| `-t`, `--split-size t` | `0` = automático (padrão), `1` = sem divisão (a imagem inteira como 1 bloco), `2`-`512` = blocos desse tamanho; um valor por GPU com várias GPUs (`0,0`) |
 | `-c`, `--sync-gap n` | Sync gap do Real-CUGAN `0`-`3` (padrão 3, 0 = desligado) |
 
 Antes da IA, `--deband` pode suavizar o banding da imagem original (Preferências > Configurações antes da conversão por IA, na janela).
@@ -206,7 +206,7 @@ salvo como está.
 | Opção | Significado |
 |---|---|
 | `-g`, `--gpu id` | a GPU usada: `0`, `1`... ou `-1` para a CPU (padrão: a primeira GPU). Várias GPUs: `0,1` |
-| `-j`, `--threads l:p:s` | threads de leitura : processamento : gravação (padrão `1:2:2`). Processamento = imagens ao mesmo tempo em cada GPU (1-32), ou os núcleos da CPU com `-g -1`. Duas GPUs: `1:2,2:2` |
+| `-j`, `--threads l:p:s` | threads de leitura : processamento : gravação (padrão `1:2:2`). Processamento = imagens ao mesmo tempo em cada GPU (1-20), ou os núcleos da CPU com `-g -1`. Duas GPUs: `1:2,2:2` |
 | `--vram-percent p` | usa no máximo p % (20-80, padrão 60) da memória da GPU livre no início da conversão |
 | `--ram-percent p` | usa no máximo p % (20-80, padrão 60) da RAM livre no início da conversão |
 

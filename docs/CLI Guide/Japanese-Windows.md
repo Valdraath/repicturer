@@ -163,7 +163,7 @@ repicturer-cli.exe -i art.png -o art-2x.png -g -1 -j 1:8:2
 |---|---|
 | `-m`, `--model path` | モデルのフォルダー (既定 `models-cunet`)。エンジンはフォルダーで決まります: `models-cunet`、`models-upconv_7_*`、`models-upresnet10` は waifu2x、`models-realcugan-se / -pro / -nose` は Real-CUGAN、`models-realesrgan-*`、`models-realesr-*`、`models-realesrnet-x4plus`、`models-nomos8ksc`、`models-lsdir-compact`、`models-nmkd-siax / -superscale` は Real-ESRGAN |
 | `-n`, `--noise-level n` | ノイズ除去レベル `-1` (なし)、`0`-`3` (既定 0)。Real-CUGAN: 0 = 保守的。Real-ESRGAN General: ノイズ除去の強さ。LSDIR Compact: 補正の強さ。NMKD Siax: ディテールレベル 0-3。ほかの Real-ESRGAN モデルは自動で補正します |
-| `-t`, `--split-size t` | `0` = 自動 (既定)、`1` = 分割しない (画像全体を 1 タイル)、`2` 以上 = そのサイズのタイル。複数 GPU では GPU ごとに 1 つ (`0,0`) |
+| `-t`, `--split-size t` | `0` = 自動 (既定)、`1` = 分割しない (画像全体を 1 タイル)、`2`-`512` = そのサイズのタイル。複数 GPU では GPU ごとに 1 つ (`0,0`) |
 | `-c`, `--sync-gap n` | Real-CUGAN の Sync gap `0`-`3` (既定 3、0 = オフ) |
 
 AI の前には、`--deband` で元画像のバンディングをなめらかにできます (ウィンドウの「環境設定 > AI 変換前の設定」)。AI の後、
@@ -197,7 +197,7 @@ AI の前には、`--deband` で元画像のバンディングをなめらかに
 | オプション | 意味 |
 |---|---|
 | `-g`, `--gpu id` | 使う GPU: `0`、`1`… または CPU なら `-1` (既定: 最初の GPU)。複数 GPU: `0,1` |
-| `-j`, `--threads l:p:s` | 読み込み : 処理 : 保存 のスレッド数 (既定 `1:2:2`)。処理 = GPU ごとに同時に処理する画像の数 (1-32)、`-g -1` では CPU コア数。GPU 2 台: `1:2,2:2` |
+| `-j`, `--threads l:p:s` | 読み込み : 処理 : 保存 のスレッド数 (既定 `1:2:2`)。処理 = GPU ごとに同時に処理する画像の数 (1-20)、`-g -1` では CPU コア数。GPU 2 台: `1:2,2:2` |
 | `--vram-percent p` | 変換開始時に空いている GPU メモリの最大 p % を使う (20-80、既定 60) |
 | `--ram-percent p` | 変換開始時に空いている RAM の最大 p % を使う (20-80、既定 60) |
 

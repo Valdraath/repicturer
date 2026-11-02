@@ -16,7 +16,7 @@ changes and improvements. The converter (`repicturer-cli`) is built on and inspi
 **realcugan-ncnn-vulkan** (nihui) and **Real-ESRGAN-ncnn-vulkan** (Xintao Wang), all running on Tencent's **ncnn**.
 RePicturer is an independent project; it is not affiliated with these projects or the model authors.
 
-![RePicturer main window](docs/screenshots/main-window-ai-v3.0.png)
+![RePicturer main window](docs/screenshots/main-window-ai-v3.1.png)
 
 ## Download
 
@@ -110,12 +110,12 @@ If you like the project, consider supporting me at: **[paypal.me/TheRunningRiot]
   with built-in cleanup switch to AI Scale Only by themselves, and heavy 4x models lock Thread(s) to 1, so they never run
   out of GPU memory.
 
-![Detail level and controls that follow the model (NMKD Siax)](docs/screenshots/main-window-detail-level-v3.0.png)
+![Detail level and controls that follow the model (NMKD Siax)](docs/screenshots/main-window-detail-level-v3.1.png)
 
 * **Model guide:** The **?** button next to the model list shows which model is best, also good or to avoid for each kind
   of picture, and explains every model.
 
-![Model guide: which model for which picture](docs/screenshots/model-guide-v3.0.png)
+![Model guide: which model for which picture](docs/screenshots/model-guide-v3.1.png)
 
 ### Any size
 
@@ -135,12 +135,12 @@ If you like the project, consider supporting me at: **[paypal.me/TheRunningRiot]
 * **Color Debanding** and **Dithering** (see below).
 * Runs on the GPU or the CPU, with the same result.
 
-![Non-AI Scale mode](docs/screenshots/main-window-non-ai-v3.0.png)
+![Non-AI Scale mode](docs/screenshots/main-window-non-ai-v3.1.png)
 
 * **Filter guide:** The **?** button next to the filter list compares every filter (sharpness, halos, jaggies, blur,
   speed) and says what each one is best for.
 
-![Non-AI filter guide](docs/screenshots/filter-guide-v3.0.png)
+![Non-AI filter guide](docs/screenshots/filter-guide-v3.1.png)
 
 ### Picture quality tools
 
@@ -154,7 +154,7 @@ If you like the project, consider supporting me at: **[paypal.me/TheRunningRiot]
 
 ### Preferences
 
-<p align="center"><img src="docs/screenshots/preferences-v3.0.png" width="480" alt="RePicturer Preferences window"></p>
+<p align="center"><img src="docs/screenshots/preferences-v3.1.png" width="480" alt="RePicturer Preferences window"></p>
 
 * **Models Settings:**
   * **Real-CUGAN Sync gap:** Keeps the colours of a big picture even across all the pieces it is converted in.
@@ -182,8 +182,9 @@ If you like the project, consider supporting me at: **[paypal.me/TheRunningRiot]
 ### Speed, memory and reliability
 
 * **Processing Unit:** Auto, any GPU, or the CPU, with a **Re-Detect GPU** button.
-* **Split size:** 0 = automatic from the free GPU memory, 1 = the whole picture in one piece, or a size of your choice.
-* **Thread(s):** How many pictures are converted at the same time (GPU), or how many processor cores are used (CPU).
+* **Split size (0-512):** 0 = automatic from the free GPU memory, 1 = the whole picture in one piece, or a size of your
+  choice up to 512.
+* **Thread(s) (1-20):** How many pictures are converted at the same time (GPU), or how many processor cores are used (CPU).
 * **Memory limits:** RePicturer never uses more than the share of free VRAM and RAM you allow. A Split size that cannot fit
   is lowered before the run, and pictures wait for free RAM instead of overloading the computer.
 * **Automatic recovery:** A picture that fails on the GPU is retried up to 2 times (first in 2 pieces, then as 1). A broken
@@ -195,7 +196,7 @@ If you like the project, consider supporting me at: **[paypal.me/TheRunningRiot]
 ### Easy to use
 
 * **Hover tips** on every option, in plain words, and **?** buttons that open short guides.
-* **Safe input:** Every field only accepts valid values (scale, size, the quality range of each format, memory shares),
+* **Safe input:** Every field only accepts valid values (scale, size, the quality range of each format, Split size, Thread(s), memory shares),
   with a warning right away instead of a failed conversion.
 * **Dark theme**, sharp text in every language, and a window that can be resized and maximized: everything scales with it.
 * **10 languages:** English, Chinese (Simplified / Traditional), Japanese, Korean, Portuguese (Brazil), Russian, Spanish,
@@ -232,6 +233,9 @@ repicturer-cli -i in -o out [-M denoise-scale|scale|denoise|non-ai-scale] [-s ra
                performance:  [-g gpu(s)] [-j load:process:save] [--vram-percent 20-80] [--ram-percent 20-80]
                [--list-gpu] [--progress] [-v]
 ```
+
+The split size (`-t`) accepts 0 to 512 and the process threads (`-j`, the middle number) accept 1 to 20, the same as in the
+window. Any other value stops with an error.
 
 Examples (on Linux, start the name with `./`; in PowerShell, with `.\`):
 

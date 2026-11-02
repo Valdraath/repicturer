@@ -159,7 +159,7 @@ repicturer-cli.exe -i art.png -o art-2x.png -g -1 -j 1:8:2
 |---|---|
 | `-m`, `--model path` | 模型文件夹 (默认 `models-cunet`)。引擎由文件夹决定:`models-cunet`、`models-upconv_7_*`、`models-upresnet10` 为 waifu2x;`models-realcugan-se / -pro / -nose` 为 Real-CUGAN;`models-realesrgan-*`、`models-realesr-*`、`models-realesrnet-x4plus`、`models-nomos8ksc`、`models-lsdir-compact`、`models-nmkd-siax / -superscale` 为 Real-ESRGAN |
 | `-n`, `--noise-level n` | 降噪等级 `-1` (不降噪)、`0`-`3` (默认 0)。Real-CUGAN:0 = 保守。Real-ESRGAN General:降噪强度;LSDIR Compact:清理等级;NMKD Siax:细节等级 0-3;其他 Real-ESRGAN 模型会自行清理 |
-| `-t`, `--split-size t` | `0` = 自动 (默认),`1` = 不分块 (整张图片作为 1 块),`2` 及以上 = 该大小的分块;多块 GPU 时每块一个值 (`0,0`) |
+| `-t`, `--split-size t` | `0` = 自动 (默认),`1` = 不分块 (整张图片作为 1 块),`2`-`512` = 该大小的分块;多块 GPU 时每块一个值 (`0,0`) |
 | `-c`, `--sync-gap n` | Real-CUGAN 的 Sync gap `0`-`3` (默认 3,0 = 关闭) |
 
 在 AI 之前,`--deband` 可以平滑原图中的色带 (窗口中的“首选项 > AI 转换前设置”)。AI 之后,图片会用**转换后**的滤镜缩小到
@@ -192,7 +192,7 @@ repicturer-cli.exe -i art.png -o art-2x.png -g -1 -j 1:8:2
 | 选项 | 含义 |
 |---|---|
 | `-g`, `--gpu id` | 使用的 GPU:`0`、`1`... 或 `-1` 表示 CPU (默认:第一块 GPU)。多块 GPU:`0,1` |
-| `-j`, `--threads l:p:s` | 读取 : 处理 : 保存 的线程数 (默认 `1:2:2`)。处理 = 每块 GPU 同时处理的图片数 (1-32),使用 `-g -1` 时为 CPU 核心数。两块 GPU:`1:2,2:2` |
+| `-j`, `--threads l:p:s` | 读取 : 处理 : 保存 的线程数 (默认 `1:2:2`)。处理 = 每块 GPU 同时处理的图片数 (1-20),使用 `-g -1` 时为 CPU 核心数。两块 GPU:`1:2,2:2` |
 | `--vram-percent p` | 最多使用转换开始时空闲 GPU 显存的 p % (20-80,默认 60) |
 | `--ram-percent p` | 最多使用转换开始时空闲内存的 p % (20-80,默认 60) |
 

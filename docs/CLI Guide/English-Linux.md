@@ -171,7 +171,7 @@ denoise only, anything else is denoise & scale.
 |---|---|
 | `-m`, `--model path` | model folder (default `models-cunet`). The engine follows the folder: `models-cunet`, `models-upconv_7_*`, `models-upresnet10` are waifu2x; `models-realcugan-se / -pro / -nose` are Real-CUGAN; `models-realesrgan-*`, `models-realesr-*`, `models-realesrnet-x4plus`, `models-nomos8ksc`, `models-lsdir-compact`, `models-nmkd-siax / -superscale` are Real-ESRGAN |
 | `-n`, `--noise-level n` | denoise level `-1` (none), `0`-`3` (default 0). Real-CUGAN: 0 = conservative. Real-ESRGAN General: denoise strength; LSDIR Compact: cleanup level; NMKD Siax: the detail level 0-3; the other Real-ESRGAN models clean up by themselves |
-| `-t`, `--split-size t` | `0` = automatic (default), `1` = no split (the whole picture as 1 tile), `2` and more = tiles of that size; one value per GPU with several GPUs (`0,0`) |
+| `-t`, `--split-size t` | `0` = automatic (default), `1` = no split (the whole picture as 1 tile), `2`-`512` = tiles of that size; one value per GPU with several GPUs (`0,0`) |
 | `-c`, `--sync-gap n` | Real-CUGAN sync gap `0`-`3` (default 3, 0 = off) |
 
 Before AI Conversion, `--deband` can smooth the banding of the source (the window's Preferences > Pre-AI Conversion Settings).
@@ -206,7 +206,7 @@ Post-AI Conversion Settings). The default is Bicubic Mitchell, no anti-ringing, 
 | Option | Meaning |
 |---|---|
 | `-g`, `--gpu id` | the GPU to use: `0`, `1` ... or `-1` for the CPU (default: the first GPU). Several GPUs: `0,1` |
-| `-j`, `--threads l:p:s` | threads for load : process : save (default `1:2:2`). Process = pictures at the same time on each GPU (1-32), or the CPU cores with `-g -1`. Two GPUs: `1:2,2:2` |
+| `-j`, `--threads l:p:s` | threads for load : process : save (default `1:2:2`). Process = pictures at the same time on each GPU (1-20), or the CPU cores with `-g -1`. Two GPUs: `1:2,2:2` |
 | `--vram-percent p` | use at most p % (20-80, default 60) of the GPU memory that is free when the conversion starts |
 | `--ram-percent p` | use at most p % (20-80, default 60) of the RAM that is free when the conversion starts |
 

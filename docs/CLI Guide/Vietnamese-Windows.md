@@ -163,7 +163,7 @@ repicturer-cli.exe -i art.png -o art-2x.png -g -1 -j 1:8:2
 |---|---|
 | `-m`, `--model path` | thư mục model (mặc định `models-cunet`). Engine tự chọn theo thư mục: `models-cunet`, `models-upconv_7_*`, `models-upresnet10` là waifu2x; `models-realcugan-se / -pro / -nose` là Real-CUGAN; `models-realesrgan-*`, `models-realesr-*`, `models-realesrnet-x4plus`, `models-nomos8ksc`, `models-lsdir-compact`, `models-nmkd-siax / -superscale` là Real-ESRGAN |
 | `-n`, `--noise-level n` | mức khử nhiễu `-1` (không khử), `0`-`3` (mặc định 0). Real-CUGAN: 0 = bảo toàn. Real-ESRGAN General: độ mạnh khử nhiễu; LSDIR Compact: mức làm sạch; NMKD Siax: mức chi tiết 0-3; các model Real-ESRGAN khác tự làm sạch |
-| `-t`, `--split-size t` | `0` = tự động (mặc định), `1` = không chia (cả ảnh là 1 tile), từ `2` trở lên = tile có kích thước đó; mỗi GPU một giá trị nếu dùng nhiều GPU (`0,0`) |
+| `-t`, `--split-size t` | `0` = tự động (mặc định), `1` = không chia (cả ảnh là 1 tile), `2`-`512` = tile có kích thước đó; mỗi GPU một giá trị nếu dùng nhiều GPU (`0,0`) |
 | `-c`, `--sync-gap n` | Sync gap của Real-CUGAN `0`-`3` (mặc định 3, 0 = tắt) |
 
 Trước bước AI, `--deband` có thể làm mượt các dải màu có sẵn trong ảnh gốc (Tùy chọn > Cài đặt trước xử lý AI trong cửa
@@ -198,7 +198,7 @@ Bicubic Mitchell, không chống nhiễu vòng, không dithering, không linear 
 | Tham số | Ý nghĩa |
 |---|---|
 | `-g`, `--gpu id` | GPU sẽ dùng: `0`, `1`... hoặc `-1` để dùng CPU (mặc định: GPU đầu tiên). Nhiều GPU: `0,1` |
-| `-j`, `--threads l:p:s` | số luồng đọc : xử lý : lưu (mặc định `1:2:2`). Xử lý = số ảnh chạy cùng lúc trên mỗi GPU (1-32), hoặc số nhân CPU khi dùng `-g -1`. Hai GPU: `1:2,2:2` |
+| `-j`, `--threads l:p:s` | số luồng đọc : xử lý : lưu (mặc định `1:2:2`). Xử lý = số ảnh chạy cùng lúc trên mỗi GPU (1-20), hoặc số nhân CPU khi dùng `-g -1`. Hai GPU: `1:2,2:2` |
 | `--vram-percent p` | dùng tối đa p % (20-80, mặc định 60) bộ nhớ GPU còn trống lúc bắt đầu chuyển đổi |
 | `--ram-percent p` | dùng tối đa p % (20-80, mặc định 60) RAM còn trống lúc bắt đầu chuyển đổi |
 

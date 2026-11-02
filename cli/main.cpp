@@ -101,7 +101,7 @@ static void print_usage()
         "                            Real-CUGAN: 0 = conservative, 1-3 = denoise\n"
         "                            Real-ESRGAN: the denoise strength (Real-ESRGAN General), the cleanup level\n"
         "                            (LSDIR Compact) or the detail level 0-3 (NMKD Siax); others clean up by themselves\n"
-        "  -t, --split-size t        0 = auto (default), 1 = no split (the whole picture as 1 tile), 2 and more =\n"
+        "  -t, --split-size t        0-512: 0 = auto (default), 1 = no split (the whole picture as 1 tile), 2-512 =\n"
         "                            tiles of that size; one per gpu for several gpus (0,0)\n"
         "  -c, --sync-gap n          Real-CUGAN sync gap 0-3 (default 3, 0 = off)\n"
         "  Post-conversion: the AI result is resized to the exact output size with -F / -T / -a / --linear-light\n"
@@ -120,7 +120,7 @@ static void print_usage()
         "\n"
         "Performance (every mode)\n"
         "  -g, --gpu id              gpu to use (-1 = cpu, default: the first gpu); 0,1 for several gpus\n"
-        "  -j, --threads l:p:s       threads for load : process : save (default 1:2:2); process 1-32 per gpu\n"
+        "  -j, --threads l:p:s       threads for load : process : save (default 1:2:2); process 1-20 per gpu\n"
         "                            (pictures at the same time), or the cpu cores with -g -1; 1:2,2:2 for 2 gpus\n"
         "      --vram-percent p      use at most p % (20-80, default 60) of the gpu memory that is free when the\n"
         "                            conversion starts; an AI picture that fails is retried up to 2 times (2 tiles,\n"
@@ -183,6 +183,19 @@ struct Options
     bool taps_set = false;
     int deband = 0;            // 0 off, 1 low, 2 medium, 3 high: before the AI / the filter
 };
+
+// Split size: 0-512, process threads: 1-20 (the same limits as the window)
+static const int MAX_SPLIT_SIZE = 512;
+static const int MAX_PROC_THREADS = 20;
+
+// a whole number written with digits only (no sign, no other characters); -1 when it is not one
+static int strict_int(const std::string& s)
+{
+    if (s.empty() || s.size() > 6) return -1;
+    for (const char c : s)
+        if (c < '0' || c > '9') return -1;
+    return atoi(s.c_str());
+}
 
 static std::vector<int> parse_int_array(const std::string& s)
 {
@@ -297,7 +310,20 @@ static int parse_args(const std::vector<path_t>& args, Options& o)
 
             else { fprintf(stderr, "invalid mode argument\n"); return -1; }
         }
-        else if (l == "tile_size") o.tilesize = parse_int_array(val);
+        else if (l == "tile_size")
+        {
+            o.tilesize.clear();
+            size_t pos = 0;
+            while (pos <= val.size())
+            {
+                size_t c = val.find(',', pos);
+                if (c == std::string::npos) c = val.size();
+                const int t = strict_int(val.substr(pos, c - pos));
+                if (t < 0 || t > MAX_SPLIT_SIZE) { fprintf(stderr, "invalid split-size argument (0-512)\n"); return -1; }
+                o.tilesize.push_back(t);
+                pos = c + 1;
+            }
+        }
         else if (l == "filter")
         {
             o.resample.filter = resample_filter_from_name(val);
@@ -341,9 +367,21 @@ static int parse_args(const std::vector<path_t>& args, Options& o)
         {
             size_t c1 = val.find(':'), c2 = val.rfind(':');
             if (c1 == std::string::npos || c2 == c1) { fprintf(stderr, "invalid threads argument (load:process:save)\n"); return -1; }
-            o.jobs_load = atoi(val.substr(0, c1).c_str());
-            o.jobs_proc = parse_int_array(val.substr(c1 + 1, c2 - c1 - 1));
-            o.jobs_save = atoi(val.substr(c2 + 1).c_str());
+            o.jobs_load = strict_int(val.substr(0, c1));
+            o.jobs_save = strict_int(val.substr(c2 + 1));
+            if (o.jobs_load < 1 || o.jobs_save < 1) { fprintf(stderr, "invalid threads argument (load:process:save)\n"); return -1; }
+            o.jobs_proc.clear();
+            const std::string p = val.substr(c1 + 1, c2 - c1 - 1);
+            size_t pos = 0;
+            while (pos <= p.size())
+            {
+                size_t c = p.find(',', pos);
+                if (c == std::string::npos) c = p.size();
+                const int t = strict_int(p.substr(pos, c - pos));
+                if (t < 1 || t > MAX_PROC_THREADS) { fprintf(stderr, "invalid threads argument (process 1-20)\n"); return -1; }
+                o.jobs_proc.push_back(t);
+                pos = c + 1;
+            }
         }
         else if (l == "format" || l == "output_extention") { o.format = val; o.format_set = true; }
         else if (l == "output_quality") { if (!parse_int(val, o.quality)) { fprintf(stderr, "invalid quality argument\n"); return -1; } }
@@ -1639,9 +1677,9 @@ static int run(const std::vector<path_t>& args)
     }
     for (size_t i = 0; i < o.tilesize.size(); i++)
     {
-        if (o.tilesize[i] < 0) // 0 auto, 1 whole image, 2+ tile size
+        if (o.tilesize[i] < 0 || o.tilesize[i] > MAX_SPLIT_SIZE) // 0 auto, 1 whole image, 2-512 tile size
         {
-            fprintf(stderr, "invalid split-size argument\n");
+            fprintf(stderr, "invalid split-size argument (0-512)\n");
             ncnn::destroy_gpu_instance();
             return -1;
         }
@@ -1660,9 +1698,9 @@ static int run(const std::vector<path_t>& args)
     }
     for (size_t i = 0; i < o.jobs_proc.size(); i++)
     {
-        if (o.jobs_proc[i] < 1 || o.jobs_proc[i] > 32)
+        if (o.jobs_proc[i] < 1 || o.jobs_proc[i] > MAX_PROC_THREADS)
         {
-            fprintf(stderr, "invalid threads argument (process 1-32)\n");
+            fprintf(stderr, "invalid threads argument (process 1-20)\n");
             ncnn::destroy_gpu_instance();
             return -1;
         }

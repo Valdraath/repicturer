@@ -9,7 +9,7 @@
 // the name the os shows (window title, taskbar, task manager, x11 WM_CLASS)
 #define APP_NAME "RePicturer"
 #define APP_NAME_W L"RePicturer"
-#define APP_VERSION_NUM "3.0"
+#define APP_VERSION_NUM "3.1"
 #define APP_VERSION "v" APP_VERSION_NUM
 #define APP_TITLE APP_NAME " " APP_VERSION   // title bar text
 
@@ -220,6 +220,10 @@ private:
     bool scaleNumWarn = false;                // non digit typed into <Width> / <Height>
     std::string qualityLastValid;             // last accepted text of the output quality box
     bool qualityWarn = false;                 // something outside the format's range was typed
+    std::string splitLastValid = "0";         // last accepted text of the Split size box
+    bool splitWarn = false;                   // something other than 0-512 was typed
+    std::string threadsLastValid = "2";       // last accepted text of the Thread(s) box
+    bool threadsWarn = false;                 // something other than 1-20 was typed
     bool speedHelpRequest = false;            // "?" next to split size / thread(s)
     bool resetConfirmRequest = false;         // "Reset to Default" asks first
     char editScaleWidth[64] = {0};
@@ -410,6 +414,11 @@ private:
     static int DigitsOnlyCallback(ImGuiInputTextCallbackData* data);
     static int QualityCallback(ImGuiInputTextCallbackData* data);
     void ShowQualityWarning();
+    static int SplitSizeCallback(ImGuiInputTextCallbackData* data);
+    static int ThreadsCallback(ImGuiInputTextCallbackData* data);
+    std::string SplitSizeRangeText() const;
+    std::string ThreadsRangeText() const;
+    void ShowOnceWarning(const std::string& text);
     void ShowScaleNumWarning();
     void DrawSpeedHelp(float s, bool& close);
     void DrawFilterHelp(float s, bool& close);

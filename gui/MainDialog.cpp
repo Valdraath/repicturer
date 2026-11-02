@@ -26,7 +26,8 @@
 #include <unistd.h>
 #endif
 
-static const int MaxBatchSizeList = 20;
+static const int MaxBatchSizeList = 20;  // Thread(s): 1-20, the same as the list
+static const int MaxSplitSize = 512;     // Split size: 0-512
 static const int MinCommonDivisor = 50;
 static const int DefaultCommonDivisor = 128;
 static const std::pair<int, int> DefaultCommonDivisorRange = {90, 140};
@@ -138,6 +139,16 @@ static bool IsIntIn(const std::string& s, long lo, long hi)
     for (size_t k = i; k < s.size(); k++)
         if (s[k] < '0' || s[k] > '9') return false;
     const long v = strtol(s.c_str(), nullptr, 10);
+    return v >= lo && v <= hi;
+}
+
+// a typed whole number: digits only, no leading zero ("0" itself is fine), in [lo, hi]
+static bool IsIntTextIn(const std::string& s, int lo, int hi)
+{
+    if (s.empty() || s.size() > 6 || (s.size() > 1 && s[0] == '0')) return false;
+    for (const char c : s)
+        if (c < '0' || c > '9') return false;
+    const int v = atoi(s.c_str());
     return v >= lo && v <= hi;
 }
 
@@ -594,11 +605,11 @@ bool DialogEvent::SyncMember(const bool NotSyncCropSize, const bool silent)
     if (!NotSyncCropSize)
     {
         long l;
-        if (!ParseInt(Trim(comboCrop), l) || l < 0)
+        if (!IsIntTextIn(Trim(comboCrop), 0, MaxSplitSize) || !ParseInt(Trim(comboCrop), l))
         {
             crop_size = 0;
             ret = false;
-            if (!silent) MessageBox(L("MessageCropSizeCheckError"), errTitle, IconError);
+            if (!silent) MessageBox(SplitSizeRangeText(), errTitle, IconError);
         }
         else // 0 = auto, 1 = no split (the whole image), 2+ = tile size
             crop_size = (int)l;
@@ -606,11 +617,11 @@ bool DialogEvent::SyncMember(const bool NotSyncCropSize, const bool silent)
 
     {
         long l;
-        if (!ParseInt(Trim(comboBatch), l) || l <= 0 || l > 32)
+        if (!IsIntTextIn(Trim(comboBatch), 1, MaxBatchSizeList) || !ParseInt(Trim(comboBatch), l))
         {
             batch_size = 2;
             ret = false;
-            if (!silent) MessageBox(L2("MessageProcThreadsCheckError", "Thread(s) must be an integer from 1 to 32"), errTitle, IconError);
+            if (!silent) MessageBox(ThreadsRangeText(), errTitle, IconError);
         }
         else
             batch_size = (int)l;
@@ -634,7 +645,7 @@ void DialogEvent::SetCropSizeList(const std::string& input_path)
     cropItems.clear();
 
     std::vector<int> list(CommonDivisorList(gcd));
-    list.erase(std::remove_if(list.begin(), list.end(), [](const int v) { return v < MinCommonDivisor; }), list.end());
+    list.erase(std::remove_if(list.begin(), list.end(), [](const int v) { return v < MinCommonDivisor || v > MaxSplitSize; }), list.end());
 
     // ncnn picks the tile size from the free gpu memory: "0" is the recommended value
     cropItems.push_back("0");
@@ -648,7 +659,7 @@ void DialogEvent::SetCropSizeList(const std::string& input_path)
 
     cropItems.push_back(CropSeparator);
     for (const int n : CropSizeList)
-        cropItems.push_back(std::to_string(n));
+        if (n <= MaxSplitSize) cropItems.push_back(std::to_string(n));
 
     if (strlen(comboCrop) == 0)
         CopyStr(comboCrop, sizeof(comboCrop), cropItems[0]);
@@ -737,7 +748,7 @@ void DialogEvent::SaveIni(const bool isSyncMember)
         tQuality = std::to_string(output_quality >= fmt->quality_min && output_quality <= fmt->quality_max ? output_quality : fmt->quality_default);
     const std::string tCropText = Trim(comboCrop);
     long tCropNum;
-    const std::string tCrop = ParseInt(tCropText, tCropNum) && (tCropNum >= 0 && tCropNum <= 65536) ? tCropText : "0";
+    const std::string tCrop = ParseInt(tCropText, tCropNum) && (tCropNum >= 0 && tCropNum <= MaxSplitSize) ? tCropText : "0";
 
     ini.Set(S, "LastScaleMode", tScaleMode);
     ini.Set(S, "LastScale", scale_ratio > 0.0 ? Format("%.2f", scale_ratio) : "1.00");
@@ -1953,6 +1964,7 @@ void DialogEvent::Create(int argc, char** argv)
     useCustomDirs = ini.GetInt(S, "LastUseCustomDirs", 0) != 0;
     batch_size = ini.GetInt(S, "LastBatchSize", 2);
     std::string tCrop = ini.Get(S, "LastCropSize", "0");
+    if (!IsIntTextIn(tCrop, 0, MaxSplitSize)) tCrop = atoi(tCrop.c_str()) > MaxSplitSize ? std::to_string(MaxSplitSize) : "0"; // at most 512 (older versions allowed more)
     syncgap = std::min(3, std::max(0, ini.GetInt(S, "LastSyncGap", 3)));
     vramPercent = std::min(80, std::max(20, ini.GetInt(S, "LastVramPercent", 60)));
     ramPercent = std::min(80, std::max(20, ini.GetInt(S, "LastRamPercent", 60)));
@@ -2023,7 +2035,7 @@ void DialogEvent::Create(int argc, char** argv)
     SetCropSizeList("");
     CopyStr(comboCrop, sizeof(comboCrop), tCrop);
 
-    if (!(1 <= batch_size && batch_size <= 32)) batch_size = std::min(32, std::max(1, batch_size)); // at most 32 (older versions allowed more)
+    if (!(1 <= batch_size && batch_size <= MaxBatchSizeList)) batch_size = std::min(MaxBatchSizeList, std::max(1, batch_size)); // at most 20 (older versions allowed more)
     CopyStr(comboBatch, sizeof(comboBatch), std::to_string(batch_size));
 
     SetScaleRatioText(tScaleRatio); // older settings stored 6 decimals: shown rounded to 2
@@ -2358,7 +2370,8 @@ namespace
     }
 
     // editable combo box (CBS_DROPDOWN): text field + list
-    bool EditCombo(const char* id, char* buf, size_t n, const std::vector<std::string>& items, float x, float y, float w, bool enabled = true)
+    bool EditCombo(const char* id, char* buf, size_t n, const std::vector<std::string>& items, float x, float y, float w, bool enabled = true,
+                   ImGuiInputTextCallback cb = nullptr, void* ud = nullptr)
     {
         At(x, y, 14);
         ImGui::BeginDisabled(!enabled);
@@ -2367,7 +2380,9 @@ namespace
         bool changed;
         {
             CenterText ct(buf, W(w) - bw);
-            changed = ImGui::InputText((std::string("##edit") + id).c_str(), buf, n, ImGuiInputTextFlags_CharsDecimal);
+            changed = cb ? ImGui::InputText((std::string("##edit") + id).c_str(), buf, n,
+                                            ImGuiInputTextFlags_CallbackCharFilter | ImGuiInputTextFlags_CallbackEdit, cb, ud)
+                         : ImGui::InputText((std::string("##edit") + id).c_str(), buf, n, ImGuiInputTextFlags_CharsDecimal);
         }
         ImGui::SameLine(0, 0);
         ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 0));
@@ -3035,9 +3050,13 @@ void DialogEvent::DrawMain(float s)
     else
     {
     GroupBox(L("IDC_STATIC_CROP_SIZE"), 503, 109, 72, 37);
-    EditCombo("##crop", comboCrop, sizeof(comboCrop), cropItems, 507, 123, 46);
+    // the list, setting.ini and Reset to Default also change the text: a valid one is the value an edit falls back to
+    if (IsIntTextIn(comboCrop, 0, MaxSplitSize)) splitLastValid = comboCrop;
+    EditCombo("##crop", comboCrop, sizeof(comboCrop), cropItems, 507, 123, 46, true, &DialogEvent::SplitSizeCallback, this);
+    if (splitWarn) { splitWarn = false; ShowOnceWarning(SplitSizeRangeText()); }
     if (HoverRect(503, 109, 50, 37))
-        TooltipText("%s", L2("TipCropSize", "The AI cuts big pictures into square pieces of this size, so they fit in the graphics card's memory.\n"
+        TooltipText("%s", L2("TipCropSize", "Acceptable value: From 0 to 512.\n"
+            "The AI cuts big pictures into square pieces of this size, so they fit in the graphics card's memory.\n"
             "0 = automatic, based on the free graphics memory (recommended).\n"
             "1 = no split: the whole picture in one piece.\n"
             "Bigger = a little faster but needs more memory. Click ? for details.").c_str());
@@ -3053,12 +3072,18 @@ void DialogEvent::DrawMain(float s)
         const bool heavy = cm && cm->heavy && !nonAI;
         char one[4] = "1";
         if (heavy) EditCombo("##batch", one, sizeof(one), items, 507, 161, 46, false);
-        else EditCombo("##batch", comboBatch, sizeof(comboBatch), items, 507, 161, 46);
+        else
+        {
+            if (IsIntTextIn(comboBatch, 1, MaxBatchSizeList)) threadsLastValid = comboBatch;
+            EditCombo("##batch", comboBatch, sizeof(comboBatch), items, 507, 161, 46, true, &DialogEvent::ThreadsCallback, this);
+            if (threadsWarn) { threadsWarn = false; ShowOnceWarning(ThreadsRangeText()); }
+        }
         if (heavy && HoverRect(503, 147, 50, 37))
             TooltipText("%s", Format(T("Thread(s) is locked at 1 for heavy models like %s:\n"
                 "the graphics card converts one picture at a time, so it does not run out of memory").c_str(), modelName.c_str()).c_str());
         else if (HoverRect(503, 147, 50, 37))
-            TooltipText("%s", L2("TipThreads", "GPU: how many pictures are converted at the same time (helps with folders and many files).\n"
+            TooltipText("%s", L2("TipThreads", "Acceptable value: From 1 to 20.\n"
+                "GPU: how many pictures are converted at the same time (helps with folders and many files).\n"
                 "CPU: how many processor cores are used.\n"
                 "Default 2. Click ? for details.").c_str());
         if (HelpButton("threadhelp", 556, 161, 15)) speedHelpRequest = true;
@@ -3910,6 +3935,64 @@ void DialogEvent::ShowQualityWarning()
     const int qmin = fi >= 0 && fi < g_output_format_count ? g_output_formats[fi].quality_min : 0;
     const int qmax = fi >= 0 && fi < g_output_format_count ? g_output_formats[fi].quality_max : 100;
     const std::string text = Format(T("Output quality accepts a whole number from %d to %d only, without leading zeros (e.g. 0, 5, 95).").c_str(), qmin, qmax);
+    for (const auto& m : msgBoxes)
+        if (m.text == text) return;
+    MessageBox(text, L("MessageTitleError"), IconWarning);
+}
+
+// Split size / Thread(s): digits only; the whole text must be empty (while typing) or a whole number of the range
+static int RangeEditCallback(ImGuiInputTextCallbackData* data, int lo, int hi, std::string& lastValid, bool& warn)
+{
+    if (data->EventFlag == ImGuiInputTextFlags_CallbackCharFilter)
+    {
+        const ImWchar c = data->EventChar;
+        if (c >= '0' && c <= '9') return 0;
+        warn = true;
+        return 1;
+    }
+    if (data->EventFlag == ImGuiInputTextFlags_CallbackEdit)
+    {
+        const std::string t(data->Buf, data->BufTextLen);
+        if (t.empty() || IsIntTextIn(t, lo, hi))
+            lastValid = t;
+        else
+        {
+            data->DeleteChars(0, data->BufTextLen);
+            data->InsertChars(0, lastValid.c_str());
+            data->CursorPos = data->BufTextLen;
+            data->SelectionStart = data->SelectionEnd = data->CursorPos;
+            warn = true;
+        }
+    }
+    return 0;
+}
+
+int DialogEvent::SplitSizeCallback(ImGuiInputTextCallbackData* data)
+{
+    DialogEvent* self = (DialogEvent*)data->UserData;
+    return RangeEditCallback(data, 0, MaxSplitSize, self->splitLastValid, self->splitWarn);
+}
+
+int DialogEvent::ThreadsCallback(ImGuiInputTextCallbackData* data)
+{
+    DialogEvent* self = (DialogEvent*)data->UserData;
+    return RangeEditCallback(data, 1, MaxBatchSizeList, self->threadsLastValid, self->threadsWarn);
+}
+
+std::string DialogEvent::SplitSizeRangeText() const
+{
+    return Format(T("Split size accepts a whole number from 0 to %d only, without leading zeros.\n"
+        "0 = automatic, 1 = no split.").c_str(), MaxSplitSize);
+}
+
+std::string DialogEvent::ThreadsRangeText() const
+{
+    return Format(T("Thread(s) accepts a whole number from 1 to %d only, without leading zeros.").c_str(), MaxBatchSizeList);
+}
+
+// one warning at a time, not one per key press
+void DialogEvent::ShowOnceWarning(const std::string& text)
+{
     for (const auto& m : msgBoxes)
         if (m.text == text) return;
     MessageBox(text, L("MessageTitleError"), IconWarning);
